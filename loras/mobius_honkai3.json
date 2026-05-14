@@ -1,0 +1,7 @@
+{
+  "description": "Mobius from Honkai Impact 3 — anime character style",
+  "base_model": "Pony Diffusion V6 XL",
+  "trigger_words": ["mobius (honkai impact)", "green eyes", "green hair", "score_9", "score_8_up", "score_7_up"],
+  "recommended_scale": 0.7,
+  "nsfw": false
+}

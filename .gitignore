@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+outputs/
+*.ckpt
+*.safetensors
+*.bin
+models/
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+.env
+*.pt

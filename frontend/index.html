@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Image Studio — Text to Image Generator</title>
+  <meta name="description" content="Generate stunning AI artwork from text prompts using your local AI model." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Canvas background -->
+  <canvas id="bg-canvas"></canvas>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <span class="logo-text">AI<span class="accent">Studio</span></span>
+      </div>
+      <nav class="nav">
+        <button class="nav-btn active" data-tab="generate" id="nav-generate">Generate</button>
+        <button class="nav-btn" data-tab="gallery" id="nav-gallery">Gallery</button>
+        <button class="nav-btn" data-tab="settings" id="nav-settings">Settings</button>
+      </nav>
+
+      <!-- NSFW Toggle -->
+      <button class="nsfw-toggle" id="nsfw-toggle" title="Bật/tắt chế độ NSFW">
+        <span class="nsfw-icon" id="nsfw-icon">🔒</span>
+        <span class="nsfw-label" id="nsfw-label">Safe</span>
+      </button>
+
+      <div class="header-status">
+        <div class="status-dot" id="status-dot"></div>
+        <span class="status-text" id="status-text">Connecting...</span>
+      </div>
+    </div>
+  </header>
+
+
+  <!-- Main content -->
+  <main class="main">
+
+    <!-- ── GENERATE TAB ─────────────────────────────────────────────────── -->
+    <section class="tab-panel active" id="tab-generate">
+      <div class="generate-layout">
+
+        <!-- Left: Controls -->
+        <aside class="controls-panel">
+          <div class="panel-card">
+            <h2 class="panel-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+              Prompt
+            </h2>
+
+            <div class="input-group">
+              <label class="input-label" for="prompt-input">Positive Prompt</label>
+              <textarea
+                id="prompt-input"
+                class="textarea"
+                placeholder="a majestic dragon flying over a neon-lit cyberpunk city, ultra detailed, cinematic lighting, 4k..."
+                rows="4"
+              ></textarea>
+              <div class="prompt-actions">
+                <button class="btn-ghost btn-sm" id="btn-random-prompt" title="Random prompt">
+                  🎲 Random
+                </button>
+                <button class="btn-ghost btn-sm" id="btn-enhance-prompt" title="Enhance prompt">
+                  ✨ Enhance
+                </button>
+              </div>
+            </div>
+
+            <div class="input-group">
+              <label class="input-label" for="negative-input">Negative Prompt</label>
+              <textarea
+                id="negative-input"
+                class="textarea"
+                placeholder="blurry, ugly, deformed, low quality, watermark, text, nsfw..."
+                rows="2"
+              ></textarea>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <h2 class="panel-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/>
+              </svg>
+              Parameters
+            </h2>
+
+            <!-- Dimensions -->
+            <div class="param-row">
+              <label class="input-label">Resolution</label>
+              <div class="preset-btns" id="resolution-presets">
+                <button class="preset-btn active" data-w="512" data-h="512">512×512</button>
+                <button class="preset-btn" data-w="768" data-h="512">768×512</button>
+                <button class="preset-btn" data-w="512" data-h="768">512×768</button>
+                <button class="preset-btn" data-w="768" data-h="768">768×768</button>
+                <button class="preset-btn" data-w="1024" data-h="1024">1024×1024</button>
+              </div>
+            </div>
+
+            <div class="sliders-grid">
+              <!-- Steps -->
+              <div class="slider-group">
+                <div class="slider-header">
+                  <label class="input-label">Steps</label>
+                  <span class="slider-value" id="steps-value">20</span>
+                </div>
+                <input type="range" id="steps-slider" class="slider" min="1" max="100" value="20" />
+              </div>
+
+              <!-- CFG Scale -->
+              <div class="slider-group">
+                <div class="slider-header">
+                  <label class="input-label">CFG Scale</label>
+                  <span class="slider-value" id="cfg-value">7.5</span>
+                </div>
+                <input type="range" id="cfg-slider" class="slider" min="10" max="200" value="75" />
+              </div>
+
+              <!-- Seed -->
+              <div class="slider-group full-width">
+                <div class="slider-header">
+                  <label class="input-label">Seed</label>
+                  <span class="slider-value" id="seed-display">Random</span>
+                </div>
+                <div class="seed-row">
+                  <input type="number" id="seed-input" class="input-field" value="-1" min="-1" max="4294967295" />
+                  <button class="btn-ghost btn-sm" id="btn-random-seed" title="New random seed">🎲</button>
+                </div>
+              </div>
+
+              <!-- Num images -->
+              <div class="slider-group full-width">
+                <input type="range" id="num-images-slider" class="slider" min="1" max="4" value="1" />
+              </div>
+
+              <!-- CLIP Skip -->
+              <div class="slider-group full-width">
+                <div class="slider-header">
+                  <label class="input-label">CLIP Skip</label>
+                  <span class="slider-value" id="clip-skip-value">1</span>
+                </div>
+                <input type="range" id="clip-skip-slider" class="slider" min="1" max="4" value="1" />
+              </div>
+            </div>
+
+            <button class="btn-generate" id="btn-generate">
+              <span class="btn-generate-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+              </span>
+              <span id="btn-generate-text">Generate Image</span>
+            </button>
+          </div>
+
+          <!-- ⚡ Performance & Memory Controls -->
+          <div class="panel-card">
+            <h2 class="panel-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+              </svg>
+              Performance &amp; Memory
+            </h2>
+
+            <!-- System Info bar -->
+            <div class="sys-info-bar" id="sys-info-bar">
+              <span id="sys-gpu">GPU: —</span>
+              <span id="sys-vram">VRAM: — / — GB</span>
+              <span id="sys-ram">RAM: — GB free</span>
+            </div>
+
+            <div class="sliders-grid">
+              <!-- Performance Mode -->
+              <div class="slider-group full-width">
+                <div class="slider-header">
+                  <label class="input-label" for="perf-mode-select">Performance Mode</label>
+                  <span class="slider-value" id="perf-mode-label">Fast</span>
+                </div>
+                <select id="perf-mode-select" class="input-field select-field">
+                  <option value="fast" selected>⚡ Fast (fewer steps, lower resolution cap)</option>
+                  <option value="balanced">⚖️ Balanced (moderate quality &amp; speed)</option>
+                  <option value="quality">🎨 Quality (full user settings)</option>
+                </select>
+              </div>
+
+              <!-- VRAM Mode -->
+              <div class="slider-group full-width">
+                <div class="slider-header">
+                  <label class="input-label" for="vram-mode-select">VRAM Mode</label>
+                  <span class="slider-value" id="vram-mode-label">Balanced</span>
+                </div>
+                <select id="vram-mode-select" class="input-field select-field">
+                  <option value="max_speed">🚀 Max Speed (dùng nhiều VRAM, nhanh nhất)</option>
+                  <option value="balanced" selected>⚖️ Balanced (mặc định)</option>
+                  <option value="low_vram">💾 Low VRAM (VAE slicing/tiling)</option>
+                  <option value="ultra_low_vram">🐌 Ultra Low VRAM (CPU offload, chậm hơn)</option>
+                </select>
+              </div>
+
+              <!-- VRAM Limit -->
+              <div class="slider-group full-width">
+                <div class="slider-header">
+                  <label class="input-label" for="vram-limit-slider">VRAM Limit</label>
+                  <span class="slider-value" id="vram-limit-value">Không giới hạn</span>
+                </div>
+                <input type="range" id="vram-limit-slider" class="slider" min="0" max="24" step="1" value="0" />
+                <p class="hint-text" style="margin-top:4px">0 = không giới hạn. Đặt thấp hơn VRAM thực để tránh OOM.</p>
+              </div>
+
+              <!-- RAM Limit -->
+              <div class="slider-group full-width">
+                <div class="slider-header">
+                  <label class="input-label" for="ram-limit-slider">RAM tối thiểu cần trống</label>
+                  <span class="slider-value" id="ram-limit-value">Không giới hạn</span>
+                </div>
+                <input type="range" id="ram-limit-slider" class="slider" min="0" max="64" step="1" value="0" />
+                <p class="hint-text" style="margin-top:4px">0 = không giới hạn. Sẽ chặn generate nếu RAM tự do thấp hơn mức này.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- LoRA Panel -->
+          <div class="panel-card">
+            <h2 class="panel-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/>
+                <path d="M12 8v4l3 3"/>
+              </svg>
+              LoRA
+              <span class="lora-count-badge" id="lora-count-badge" style="display:none"></span>
+            </h2>
+
+            <div id="lora-picker-area">
+              <p class="muted" id="lora-empty-msg">Loading LoRAs...</p>
+            </div>
+
+            <div class="lora-active-bar" id="lora-active-bar" style="display:none">
+              <span class="input-label">Active:</span>
+              <span id="lora-active-names" class="lora-tags"></span>
+              <button class="btn-ghost btn-sm" id="btn-clear-loras">✕ Clear</button>
+            </div>
+          </div>
+        </aside>
+
+        <!-- Right: Output -->
+        <div class="output-panel">
+          <div class="output-header">
+            <h2 class="panel-title">Output</h2>
+            <div class="output-actions" id="output-actions" style="display:none">
+              <button class="btn-ghost btn-sm" id="btn-download-all">⬇ Download All</button>
+            </div>
+          </div>
+
+          <!-- Status bar -->
+          <div class="generation-status" id="generation-status" style="display:none">
+            <div class="status-bar-wrapper">
+              <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+              </div>
+              <span class="progress-text" id="progress-text">Generating... 0%</span>
+            </div>
+          </div>
+
+          <!-- Image grid -->
+          <div class="image-grid" id="image-grid">
+            <div class="empty-state" id="empty-state">
+              <div class="empty-icon">🎨</div>
+              <p class="empty-title">Ready to Create</p>
+              <p class="empty-sub">Enter a prompt and click Generate to create your first image</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── GALLERY TAB ──────────────────────────────────────────────────── -->
+    <section class="tab-panel" id="tab-gallery">
+      <div class="gallery-header">
+        <h1 class="page-title">Gallery</h1>
+        <p class="page-sub">All your generated images</p>
+        <button class="btn-ghost" id="btn-refresh-gallery">↺ Refresh</button>
+      </div>
+      <div class="gallery-grid" id="gallery-grid">
+        <div class="empty-state">
+          <div class="empty-icon">🖼️</div>
+          <p class="empty-title">No images yet</p>
+          <p class="empty-sub">Generated images will appear here</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── SETTINGS TAB ─────────────────────────────────────────────────── -->
+    <section class="tab-panel" id="tab-settings">
+      <div class="settings-layout">
+        <h1 class="page-title">Settings</h1>
+
+        <div class="settings-card">
+          <h3 class="settings-section-title">🤖 Model Info</h3>
+          <div id="model-info-display" class="info-grid">
+            <div class="info-row"><span>Status</span><span id="model-status-badge" class="badge">Loading...</span></div>
+            <div class="info-row"><span>Name</span><span id="model-name-val">—</span></div>
+            <div class="info-row"><span>Device</span><span id="model-device-val">—</span></div>
+            <div class="info-row"><span>Type</span><span id="model-type-val">—</span></div>
+            <div class="info-row"><span>Active LoRAs</span><span id="model-lora-val">—</span></div>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <h3 class="settings-section-title">📁 Base Models <span class="hint-inline">/models</span></h3>
+          <div id="models-list" class="models-list">
+            <p class="muted">Scanning /models directory...</p>
+          </div>
+          <p class="hint-text">Place model files (.safetensors, .ckpt) or HuggingFace folders inside <code>/models</code>.</p>
+        </div>
+
+        <div class="settings-card">
+          <h3 class="settings-section-title">💾 Checkpoints <span class="hint-inline">/checkpoints</span></h3>
+          <div id="checkpoints-list" class="models-list">
+            <p class="muted">Scanning /checkpoints directory...</p>
+          </div>
+          <div class="switch-model-form">
+            <label class="input-label">Switch to a different model (no restart needed):</label>
+            <div class="seed-row" style="margin-top:8px">
+              <select id="switch-model-select" class="input-field">
+                <option value="">— Select model —</option>
+              </select>
+              <button class="btn-primary" id="btn-switch-model">⚡ Load</button>
+            </div>
+          </div>
+          <p class="hint-text" style="margin-top:12px">Place checkpoint files (.safetensors, .ckpt) inside <code>/checkpoints</code>.</p>
+        </div>
+
+        <div class="settings-card">
+          <h3 class="settings-section-title">☁️ Download Model from URL</h3>
+          <div class="settings-form">
+            <div class="input-group">
+              <label class="input-label">Direct Download URL (HuggingFace, GitHub, etc.)</label>
+              <input type="text" id="dl-url" class="input-field" placeholder="https://huggingface.co/.../model.safetensors" />
+            </div>
+            <div class="seed-row">
+              <input type="text" id="dl-filename" class="input-field" placeholder="filename.safetensors" />
+              <select id="dl-folder" class="input-field" style="max-width:140px">
+                <option value="models">/models</option>
+                <option value="checkpoints">/checkpoints</option>
+                <option value="loras">/loras</option>
+              </select>
+              <button class="btn-primary" id="btn-download-model">⬇ Download</button>
+            </div>
+            <p class="hint-text">Note: This runs in the background. Check server console for progress.</p>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <h3 class="settings-section-title">⚙️ Default Parameters</h3>
+          <div class="settings-form">
+            <div class="form-row">
+              <label>Default Steps</label>
+              <input type="number" id="pref-steps" class="input-field" value="20" min="1" max="100" />
+            </div>
+            <div class="form-row">
+              <label>Default CFG Scale</label>
+              <input type="number" id="pref-cfg" class="input-field" value="7.5" step="0.5" min="1" max="20" />
+            </div>
+            <button class="btn-primary" id="btn-save-prefs">Save Preferences</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox">
+    <button class="lightbox-close" id="lightbox-close">✕</button>
+    <div class="lightbox-content">
+      <img id="lightbox-img" src="" alt="Generated image" />
+      <div class="lightbox-meta" id="lightbox-meta"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

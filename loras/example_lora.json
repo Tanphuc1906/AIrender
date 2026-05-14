@@ -1,0 +1,7 @@
+{
+  "description": "Example LoRA metadata file — rename to match your .safetensors file",
+  "base_model": "SD 1.5",
+  "trigger_words": ["your_trigger_word"],
+  "recommended_scale": 0.8,
+  "nsfw": false
+}
