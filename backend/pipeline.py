@@ -1,38 +1,29 @@
 """
-Image Generation Pipeline — Optimized v2
-Supports:
-  - Stable Diffusion 1.x / 2.x / SDXL
-  - .safetensors / .ckpt checkpoints (single-file)
-  - HuggingFace directory format
-  - LoRA (.safetensors) on top of any base model
-  - Runtime model/LoRA switching without restart
+CharacterForge AI - Image Generation Pipeline
 
-Speed optimizations v2:
-  - torch.compile() UNet (PyTorch >= 2.0)
-  - VRAM mode caching (no re-apply every generate)
-  - Real CUDA memory fraction limit (vram_limit_gb)
-  - Reduced fast-mode steps (12 instead of 14)
-  - CUDA TF32 / autocast / inference_mode
-  - channels_last memory format
-  - DPMSolverMultistep + Karras scheduler
+Local AI character generation pipeline built on HuggingFace Diffusers.
+
+Features:
+- Stable Diffusion 1.x / 2.x / SDXL support
+- Single-file checkpoint loading: .safetensors / .ckpt / .bin
+- HuggingFace directory format support
+- LoRA loading and runtime switching
+- CUDA, FP16, TF32, DPMSolver scheduler optimization
+- VRAM modes and RAM guard
+- SDXL/Pony-safe clip_skip handling
 """
 from __future__ import annotations
 
 import asyncio
-import gc
 import json
-import os
 import random
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
-
-# Fix CUDA memory fragmentation (PyTorch recommendation for OOM errors)
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from .config import Settings
 
 if TYPE_CHECKING:
-    import torch
     from PIL import Image
 
 BASE_DIR = Path(__file__).parent.parent
@@ -46,12 +37,7 @@ class ImagePipeline:
         self._model_info: dict = {}
         self._active_loras: list = []
         self._device: str = "cpu"
-        self._current_vram_mode: str = ""   # cache — skip re-apply if unchanged
-        self._compiled: bool = False         # torch.compile flag
-
-    # -------------------------------------------------------------------------
-    # Public async wrappers
-    # -------------------------------------------------------------------------
+        self._last_generation_info: dict = {}
 
     async def load(self, model_name: str = "") -> None:
         loop = asyncio.get_event_loop()
@@ -80,18 +66,9 @@ class ImagePipeline:
         clip_skip: int = 1,
         performance_mode: str = "fast",
         vram_mode: str = "balanced",
-        vram_limit_gb: float = 0,
         ram_limit_gb: float = 0,
         progress_callback: Optional[Callable] = None,
     ) -> list:
-        """
-        Generate images.
-
-        performance_mode: fast | balanced | quality
-        vram_mode: max_speed | balanced | low_vram | ultra_low_vram
-        vram_limit_gb: hard VRAM cap in GB (0 = no limit)
-        ram_limit_gb: min free RAM guard in GB (0 = no limit)
-        """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
@@ -109,14 +86,9 @@ class ImagePipeline:
             clip_skip,
             performance_mode,
             vram_mode,
-            vram_limit_gb,
             ram_limit_gb,
             progress_callback,
         )
-
-    # -------------------------------------------------------------------------
-    # Model loading
-    # -------------------------------------------------------------------------
 
     def _load_sync(self, model_name: str = "") -> None:
         import torch
@@ -128,25 +100,31 @@ class ImagePipeline:
         model_path = self._find_model(model_name)
         if not model_path:
             raise FileNotFoundError(
-                "No model found in /models or /checkpoints directory.\n"
-                "Supported: .safetensors, .ckpt files or HuggingFace folders."
+                "No model found in /models or /checkpoints directory. "
+                "Supported: .safetensors, .ckpt, .bin files or HuggingFace folders."
             )
 
-        self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = torch.float16 if self._device == "cuda" else torch.float32
+        if torch.cuda.is_available():
+            self._device = "cuda"
+            dtype = torch.float16
+            print("   CUDA available: True")
+            print(f"   GPU: {torch.cuda.get_device_name(0)}")
+        else:
+            self._device = "cpu"
+            dtype = torch.float32
+            print("   CUDA available: False")
+            print("   WARNING: Running on CPU. Install CUDA-enabled PyTorch for GPU acceleration.")
 
         print(f"Loading model: {model_path.name}")
         print(f"   Device: {self._device} | Dtype: {dtype}")
-
         if model_path.is_file():
             print(f"   Size  : {round(model_path.stat().st_size / 1e9, 2)} GB")
 
         pipe_cls = self._detect_pipeline_class(model_path)
         is_sdxl = "XL" in pipe_cls.__name__
-        is_single_file = model_path.suffix.lower() in (".safetensors", ".ckpt")
+        is_single_file = model_path.suffix.lower() in (".safetensors", ".ckpt", ".bin")
 
         load_kwargs: dict = {"torch_dtype": dtype}
-
         if not is_sdxl:
             load_kwargs["safety_checker"] = None
 
@@ -166,12 +144,7 @@ class ImagePipeline:
                 self.pipe = pipe_cls.from_pretrained(str(model_path), **load_kwargs)
 
         self.pipe = self.pipe.to(self._device)
-        self._current_vram_mode = ""   # reset cache after reload
-        self._compiled = False
-
-        self._apply_memory_optimizations()
         self._apply_static_performance_optimizations()
-        self._try_compile_unet()
 
         self._active_loras = []
         self.is_loaded = True
@@ -183,66 +156,29 @@ class ImagePipeline:
             "type": pipe_cls.__name__,
             "is_sdxl": is_sdxl,
             "active_loras": [],
-            "compiled": self._compiled,
+            "metadata": self._read_sidecar_metadata(model_path),
         }
-
         print(f"Base model ready: {model_path.name}")
 
-    def _apply_memory_optimizations(self) -> None:
-        if self.pipe is None:
-            return
-
-        if self._device == "cuda":
-            # Always enable attention slicing as baseline
-            try:
-                self.pipe.enable_attention_slicing(1)
-                print("   [MEM] Attention slicing enabled (slice_size=1)")
-            except Exception:
-                pass
-
-            # Enable VAE slicing by default — avoids OOM on high-res
-            try:
-                self.pipe.enable_vae_slicing()
-                print("   [MEM] VAE slicing enabled")
-            except Exception:
-                pass
-
-            # Enable VAE tiling by default — greatly reduces peak VRAM
-            try:
-                self.pipe.enable_vae_tiling()
-                print("   [MEM] VAE tiling enabled")
-            except Exception:
-                pass
-
-            if getattr(self.settings, "enable_xformers", False):
-                try:
-                    self.pipe.enable_xformers_memory_efficient_attention()
-                    print("   xformers enabled")
-                except Exception:
-                    print("   xformers not available, skipping")
-
     def _apply_static_performance_optimizations(self) -> None:
-        """One-time optimizations after model load."""
         if self.pipe is None:
             return
 
         try:
             import torch
-
             if self._device == "cuda":
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
-
                 try:
                     torch.set_float32_matmul_precision("high")
                 except Exception:
                     pass
-
-                # channels_last on UNet only — VAE can cause fragmentation
                 try:
                     if hasattr(self.pipe, "unet") and self.pipe.unet is not None:
                         self.pipe.unet.to(memory_format=torch.channels_last)
-                    print("   [PERF] channels_last enabled (UNet only)")
+                    if hasattr(self.pipe, "vae") and self.pipe.vae is not None:
+                        self.pipe.vae.to(memory_format=torch.channels_last)
+                    print("   [PERF] channels_last enabled")
                 except Exception:
                     pass
         except Exception:
@@ -258,147 +194,19 @@ class ImagePipeline:
         except Exception as exc:
             print(f"   [WARN] Could not switch scheduler: {exc}")
 
-    def _try_compile_unet(self) -> None:
-        """
-        torch.compile() the UNet for faster inference (PyTorch >= 2.0).
-        Uses 'default' mode instead of 'reduce-overhead' to avoid peak VRAM
-        spikes caused by CUDA graph capture on 8GB GPUs.
-        Warmup happens on first generation only.
-        """
-        if self._device != "cuda":
-            return
+        if self._device == "cuda" and getattr(self.settings, "enable_xformers", False):
+            try:
+                self.pipe.enable_xformers_memory_efficient_attention()
+                print("   [PERF] xFormers enabled")
+            except Exception:
+                print("   [PERF] xFormers not available")
 
-        try:
-            import torch
-            if not hasattr(torch, "compile"):
-                print("   [PERF] torch.compile not available (PyTorch < 2.0), skipping")
-                return
-
-            # Check available VRAM — skip compile if < 6 GB free to avoid OOM
-            mem = torch.cuda.mem_get_info(0)
-            free_gb = mem[0] / (1024 ** 3)
-            if free_gb < 2.0:
-                print(f"   [PERF] Skipping torch.compile — only {free_gb:.1f} GB VRAM free (need >= 2 GB)")
-                return
-
-            if hasattr(self.pipe, "unet") and self.pipe.unet is not None:
-                print("   [PERF] Compiling UNet with torch.compile (mode=default)...")
-                self.pipe.unet = torch.compile(
-                    self.pipe.unet,
-                    mode="default",       # safer than reduce-overhead for 8GB GPUs
-                    fullgraph=False,
-                )
-                self._compiled = True
-                print("   [PERF] UNet compiled OK — first generation will be slower (warmup)")
-        except Exception as exc:
-            print(f"   [WARN] torch.compile failed: {exc}")
-
-    # -------------------------------------------------------------------------
-    # Runtime performance / RAM helpers
-    # -------------------------------------------------------------------------
-
-    def _apply_vram_limit(self, vram_limit_gb: float) -> None:
-        """
-        Hard VRAM limit via CUDA memory fraction.
-        0 = no limit.
-        """
-        if not vram_limit_gb or vram_limit_gb <= 0:
-            return
-
-        try:
-            import torch
-            if not torch.cuda.is_available():
-                return
-
-            total_vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-            fraction = min(vram_limit_gb / total_vram, 1.0)
-
-            torch.cuda.set_per_process_memory_fraction(fraction, device=0)
-            print(f"   [VRAM] CUDA memory fraction set: {fraction:.2f} ({vram_limit_gb:.1f}/{total_vram:.1f} GB)")
-        except Exception as exc:
-            print(f"   [WARN] VRAM limit failed: {exc}")
-
-    def _apply_runtime_vram_mode(self, vram_mode: str) -> None:
-        """Apply VRAM mode only if changed (cached)."""
+    def _apply_runtime_performance_mode(self, performance_mode: str, vram_mode: str) -> None:
         if self.pipe is None:
             return
 
         vram_mode = (vram_mode or "balanced").lower()
 
-        if vram_mode == self._current_vram_mode:
-            return   # already applied, skip overhead
-
-        print(f"   [VRAM] Switching mode: {self._current_vram_mode!r} → {vram_mode!r}")
-
-        try:
-            if vram_mode == "max_speed":
-                try:
-                    self.pipe.disable_attention_slicing()
-                    print("   [VRAM] max_speed: attention slicing disabled")
-                except Exception:
-                    pass
-
-            elif vram_mode == "balanced":
-                try:
-                    self.pipe.enable_attention_slicing(1)
-                except Exception:
-                    pass
-                try:
-                    self.pipe.enable_vae_slicing()
-                except Exception:
-                    pass
-                try:
-                    self.pipe.enable_vae_tiling()
-                except Exception:
-                    pass
-                # Use sequential CPU offload in balanced mode for 8GB GPUs
-                # This moves sub-models to CPU when not in use
-                try:
-                    self.pipe.enable_sequential_cpu_offload()
-                    print("   [VRAM] balanced: sequential CPU offload + VAE slicing/tiling")
-                except Exception as exc:
-                    print(f"   [VRAM] balanced: CPU offload unavailable ({exc}), using attention slicing")
-
-            elif vram_mode == "low_vram":
-                try:
-                    self.pipe.enable_attention_slicing("max")
-                except Exception:
-                    pass
-                try:
-                    self.pipe.enable_vae_slicing()
-                except Exception:
-                    pass
-                try:
-                    self.pipe.enable_vae_tiling()
-                except Exception:
-                    pass
-                print("   [VRAM] low_vram: attention slicing max + VAE slicing/tiling")
-
-            elif vram_mode == "ultra_low_vram":
-                try:
-                    self.pipe.enable_attention_slicing("max")
-                except Exception:
-                    pass
-                try:
-                    self.pipe.enable_vae_slicing()
-                except Exception:
-                    pass
-                try:
-                    self.pipe.enable_vae_tiling()
-                except Exception:
-                    pass
-                try:
-                    self.pipe.enable_model_cpu_offload()
-                    print("   [VRAM] ultra_low_vram: model CPU offload enabled")
-                except Exception as exc:
-                    print(f"   [WARN] CPU offload failed: {exc}")
-
-        except Exception as exc:
-            print(f"   [WARN] VRAM mode apply failed: {exc}")
-
-        self._current_vram_mode = vram_mode
-
-    def _apply_cuda_tf32(self) -> None:
         try:
             import torch
             if torch.cuda.is_available():
@@ -407,33 +215,57 @@ class ImagePipeline:
         except Exception:
             pass
 
+        try:
+            if vram_mode == "max_speed":
+                try:
+                    self.pipe.disable_attention_slicing()
+                    print("   [VRAM] max_speed: attention slicing disabled")
+                except Exception:
+                    pass
+            elif vram_mode == "balanced":
+                try:
+                    self.pipe.enable_attention_slicing("auto")
+                    print("   [VRAM] balanced: attention slicing auto")
+                except Exception:
+                    pass
+            elif vram_mode == "low_vram":
+                try:
+                    self.pipe.enable_attention_slicing("max")
+                    self.pipe.enable_vae_slicing()
+                    self.pipe.enable_vae_tiling()
+                    print("   [VRAM] low_vram: slicing/tiling enabled")
+                except Exception:
+                    pass
+            elif vram_mode == "ultra_low_vram":
+                try:
+                    self.pipe.enable_attention_slicing("max")
+                    self.pipe.enable_vae_slicing()
+                    self.pipe.enable_vae_tiling()
+                    self.pipe.enable_model_cpu_offload()
+                    print("   [VRAM] ultra_low_vram: CPU offload enabled")
+                except Exception as exc:
+                    print(f"   [WARN] ultra_low_vram failed: {exc}")
+        except Exception as exc:
+            print(f"   [WARN] Runtime VRAM mode failed: {exc}")
+
     def _check_ram_limit(self, ram_limit_gb: float) -> None:
-        """
-        Soft RAM guard. Blocks generation if free RAM < ram_limit_gb.
-        Use 0 to disable.
-        """
         if not ram_limit_gb or ram_limit_gb <= 0:
             return
-
         try:
             import psutil
             available_gb = psutil.virtual_memory().available / (1024 ** 3)
-
             if available_gb < ram_limit_gb:
                 raise RuntimeError(
-                    f"Not enough free RAM. Available: {available_gb:.1f} GB, required: {ram_limit_gb:.1f} GB."
+                    f"Not enough free RAM. Available: {available_gb:.1f} GB, "
+                    f"required: {ram_limit_gb:.1f} GB."
                 )
-            print(f"   [RAM] Available: {available_gb:.1f} GB | Required: {ram_limit_gb:.1f} GB — OK")
+            print(f"   [RAM] Available: {available_gb:.1f} GB | Required: {ram_limit_gb:.1f} GB")
         except ImportError:
             print("   [WARN] psutil not installed, RAM limit check skipped.")
         except RuntimeError:
             raise
         except Exception as exc:
             print(f"   [WARN] RAM check failed: {exc}")
-
-    # -------------------------------------------------------------------------
-    # LoRA management
-    # -------------------------------------------------------------------------
 
     def _apply_loras_sync(self, lora_names: list, scales: list) -> None:
         if not self.pipe:
@@ -470,21 +302,19 @@ class ImagePipeline:
         if loaded:
             adapter_names = [lo["adapter"] for lo in loaded]
             adapter_scales = [lo["scale"] for lo in loaded]
-
             try:
                 self.pipe.set_adapters(adapter_names, adapter_weights=adapter_scales)
             except Exception as exc:
                 print(f"   set_adapters failed: {exc}")
+                print("   Trying fuse_lora instead...")
                 try:
                     self.pipe.fuse_lora(lora_scale=adapter_scales[0] if adapter_scales else 1.0)
                 except Exception as fuse_exc:
                     print(f"   fuse_lora failed: {fuse_exc}")
 
         self._active_loras = [lo["name"] for lo in loaded]
-
         if self._model_info:
             self._model_info["active_loras"] = self._active_loras
-
         print(f"   Active LoRAs: {self._active_loras}")
 
     def _clear_loras_sync(self) -> None:
@@ -494,15 +324,10 @@ class ImagePipeline:
             self.pipe.unload_lora_weights()
         except Exception:
             pass
-
         self._active_loras = []
         if self._model_info:
             self._model_info["active_loras"] = []
         print("   LoRAs cleared")
-
-    # -------------------------------------------------------------------------
-    # Path helpers
-    # -------------------------------------------------------------------------
 
     def _find_model(self, model_name: str = "") -> Optional[Path]:
         search_dirs = [BASE_DIR / "models", BASE_DIR / "checkpoints"]
@@ -522,7 +347,7 @@ class ImagePipeline:
 
         if model_name:
             for candidate in candidates:
-                if candidate.name == model_name:
+                if candidate.name == model_name or candidate.stem == model_name:
                     return candidate
             model_name_lower = model_name.lower()
             for candidate in candidates:
@@ -541,24 +366,31 @@ class ImagePipeline:
         for candidate in candidates:
             if candidate.is_dir():
                 return candidate
-
         return None
 
     def _find_lora(self, name: str) -> Optional[Path]:
         loras_dir = BASE_DIR / "loras"
         if not loras_dir.exists():
             return None
-
         for item in loras_dir.glob("*.safetensors"):
             if item.name == name or item.stem == name:
                 return item
-
         name_lower = name.lower()
         for item in loras_dir.glob("*.safetensors"):
             if name_lower in item.name.lower():
                 return item
-
         return None
+
+    def _read_sidecar_metadata(self, item: Path) -> dict:
+        meta_file = item.with_suffix(".json")
+        if not meta_file.exists():
+            return {}
+        try:
+            with open(meta_file, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     def _detect_pipeline_class(self, model_path: Path):
         from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
@@ -582,10 +414,6 @@ class ImagePipeline:
         print("   Detected: Stable Diffusion 1.x/2.x pipeline")
         return StableDiffusionPipeline
 
-    # -------------------------------------------------------------------------
-    # Inference
-    # -------------------------------------------------------------------------
-
     def _generate_sync(
         self,
         prompt: str,
@@ -601,7 +429,6 @@ class ImagePipeline:
         clip_skip: int,
         performance_mode: str,
         vram_mode: str,
-        vram_limit_gb: float,
         ram_limit_gb: float,
         progress_callback: Optional[Callable],
     ) -> list:
@@ -610,61 +437,37 @@ class ImagePipeline:
         if self.pipe is None:
             raise RuntimeError("Base model not loaded.")
 
+        start_time = time.time()
         performance_mode = (performance_mode or "fast").lower()
         vram_mode = (vram_mode or "balanced").lower()
 
-        # 1. RAM guard
         self._check_ram_limit(ram_limit_gb)
+        self._apply_runtime_performance_mode(performance_mode, vram_mode)
 
-        # 2. Hard VRAM limit (CUDA memory fraction)
-        self._apply_vram_limit(vram_limit_gb)
-
-        # 3. CUDA TF32 (idempotent)
-        self._apply_cuda_tf32()
-
-        # 4. VRAM mode — only re-apply if changed (cached)
-        self._apply_runtime_vram_mode(vram_mode)
-
-        # 5. Ensure scheduler is fast
-        try:
-            from diffusers import DPMSolverMultistepScheduler
-            if self.pipe.scheduler.__class__.__name__ != "DPMSolverMultistepScheduler":
-                self.pipe.scheduler = DPMSolverMultistepScheduler.from_config(
-                    self.pipe.scheduler.config,
-                    use_karras_sigmas=True,
-                )
-        except Exception:
-            pass
-
-        # 6. Apply LoRAs if provided
         if lora_names:
             self._apply_loras_sync(lora_names, lora_scales)
 
-        # 7. Performance mode presets
         if performance_mode == "fast":
-            # Fast: aggressively reduce cost
-            num_inference_steps = min(num_inference_steps, 12)
-            guidance_scale = min(guidance_scale, 6.0)
+            num_inference_steps = min(num_inference_steps, 14)
+            guidance_scale = min(guidance_scale, 6.5)
             width = min(width, 768)
             height = min(height, 768)
-
         elif performance_mode == "balanced":
             num_inference_steps = min(num_inference_steps, 22)
             guidance_scale = min(guidance_scale, 8.0)
-
         elif performance_mode == "quality":
-            pass  # keep user settings
-
+            pass
         else:
             performance_mode = "fast"
-            num_inference_steps = min(num_inference_steps, 12)
-            guidance_scale = min(guidance_scale, 6.0)
+            num_inference_steps = min(num_inference_steps, 14)
+            guidance_scale = min(guidance_scale, 6.5)
             width = min(width, 768)
             height = min(height, 768)
 
-        # 8. Safe dimensions (multiples of 8)
-        width = max(256, (int(width) // 8) * 8)
-        height = max(256, (int(height) // 8) * 8)
+        width = int(width)
+        height = int(height)
+        width = max(256, (width // 8) * 8)
+        height = max(256, (height // 8) * 8)
 
         actual_seed = seed if seed != -1 else random.randint(0, 2**32 - 1)
         generator = torch.Generator(device=self._device).manual_seed(actual_seed)
@@ -696,31 +499,15 @@ class ImagePipeline:
 
         print(
             f"   [GEN] mode={performance_mode} | vram={vram_mode} | "
-            f"{width}x{height} | steps={num_inference_steps} | "
-            f"cfg={guidance_scale} | seed={actual_seed} | compiled={self._compiled}"
+            f"{width}x{height} | steps={num_inference_steps} | cfg={guidance_scale} | seed={actual_seed}"
         )
 
-        # 9. Aggressive memory cleanup before generation
-        gc.collect()
         if self._device == "cuda":
             try:
                 torch.cuda.empty_cache()
-                torch.cuda.synchronize()
             except Exception:
                 pass
 
-        # Log VRAM state before inference for diagnostics
-        if self._device == "cuda":
-            try:
-                mem = torch.cuda.mem_get_info(0)
-                free_gb = mem[0] / (1024 ** 3)
-                total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-                used_gb = total_gb - free_gb
-                print(f"   [VRAM] Pre-inference: {used_gb:.2f}/{total_gb:.2f} GB used, {free_gb:.2f} GB free")
-            except Exception:
-                pass
-
-        # 10. Inference
         with torch.inference_mode():
             if self._device == "cuda":
                 with torch.autocast("cuda"):
@@ -728,8 +515,23 @@ class ImagePipeline:
             else:
                 result = self.pipe(**call_kwargs)  # type: ignore[operator]
 
-        # 11. Clear cache after
-        gc.collect()
+        elapsed = round(time.time() - start_time, 2)
+        self._last_generation_info = {
+            "elapsed_seconds": elapsed,
+            "device": self._device,
+            "model": self._model_info.get("name", ""),
+            "width": width,
+            "height": height,
+            "steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "seed": actual_seed,
+            "performance_mode": performance_mode,
+            "vram_mode": vram_mode,
+            "num_images": num_images,
+            "active_loras": self._active_loras,
+        }
+        print(f"   [GEN] done in {elapsed}s")
+
         if self._device == "cuda":
             try:
                 torch.cuda.empty_cache()
@@ -738,50 +540,13 @@ class ImagePipeline:
 
         return result.images
 
-    # -------------------------------------------------------------------------
-    # System info
-    # -------------------------------------------------------------------------
-
-    def get_system_info(self) -> dict:
-        info: dict = {
-            "device": self._device,
-            "compiled": self._compiled,
-            "vram_total_gb": None,
-            "vram_used_gb": None,
-            "vram_free_gb": None,
-            "ram_total_gb": None,
-            "ram_available_gb": None,
-            "gpu_name": None,
-        }
-
-        try:
-            import torch
-            if torch.cuda.is_available():
-                props = torch.cuda.get_device_properties(0)
-                info["gpu_name"] = props.name
-                info["vram_total_gb"] = round(props.total_memory / 1e9, 2)
-                mem = torch.cuda.mem_get_info(0)
-                info["vram_free_gb"] = round(mem[0] / 1e9, 2)
-                info["vram_used_gb"] = round((props.total_memory - mem[0]) / 1e9, 2)
-        except Exception:
-            pass
-
-        try:
-            import psutil
-            vm = psutil.virtual_memory()
-            info["ram_total_gb"] = round(vm.total / 1e9, 2)
-            info["ram_available_gb"] = round(vm.available / 1e9, 2)
-        except Exception:
-            pass
-
+    def get_info(self) -> dict:
+        info = dict(self._model_info)
+        info["last_generation"] = self._last_generation_info
         return info
 
-    # -------------------------------------------------------------------------
-    # Info / Cleanup
-    # -------------------------------------------------------------------------
-
-    def get_info(self) -> dict:
-        return self._model_info
+    def get_last_generation_info(self) -> dict:
+        return self._last_generation_info
 
     def unload(self) -> None:
         if self.pipe:
@@ -795,8 +560,7 @@ class ImagePipeline:
         self.is_loaded = False
         self._active_loras = []
         self._model_info = {}
-        self._current_vram_mode = ""
-        self._compiled = False
+        self._last_generation_info = {}
 
         try:
             import torch

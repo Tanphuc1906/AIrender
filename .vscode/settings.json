@@ -15,5 +15,6 @@
   },
   "python.analysis.ignore": [
     "venv/**"
-  ]
+  ],
+  "python.defaultInterpreterPath": "e:\\AI\\venv\\Scripts\\python.exe"
 }

@@ -1,0 +1,26 @@
+[
+  {
+    "id": "portfolio-cinematic",
+    "name": "Portfolio Cinematic Portrait",
+    "category": "style",
+    "prompt_template": "{subject}, cinematic portrait, detailed eyes, dramatic rim light, high detail, professional composition",
+    "negative_prompt": "blurry, low quality, watermark, text, deformed, bad anatomy",
+    "recommended_steps": 14,
+    "recommended_cfg": 6.5,
+    "recommended_resolution": "768x768",
+    "recommended_loras": [],
+    "description": "A general-purpose cinematic preset for portfolio screenshots."
+  },
+  {
+    "id": "character-consistency",
+    "name": "Character Consistency",
+    "category": "character",
+    "prompt_template": "{subject}, consistent character design, reference sheet style, clean linework, detailed outfit, neutral background",
+    "negative_prompt": "blurry, inconsistent face, low quality, extra limbs, text, watermark",
+    "recommended_steps": 18,
+    "recommended_cfg": 7.0,
+    "recommended_resolution": "768x768",
+    "recommended_loras": [],
+    "description": "A preset focused on stable character identity and reusable outputs."
+  }
+]

@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+diffusers
+transformers
+accelerate
+safetensors
+torch
+torchvision
+pydantic
+python-dotenv
+pillow
+psutil
+httpx

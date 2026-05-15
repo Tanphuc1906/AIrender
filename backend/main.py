@@ -1,10 +1,16 @@
 """
-AI Text-to-Image Backend Server
-FastAPI + HuggingFace Diffusers
-Supports: Base model, LoRA, Checkpoint switching
-Adds:
-  - SFW / NSFW classification for Base Models and Checkpoints
-  - Password gate for NSFW models/checkpoints
+CharacterForge AI - Backend Server
+
+FastAPI + HuggingFace Diffusers local AI image generation backend.
+
+Portfolio-oriented features:
+- Product information endpoint
+- Model / checkpoint / LoRA metadata
+- Character preset API
+- Async generation jobs
+- Gallery metadata
+- Password-based NSFW/SFW access control
+- CUDA / VRAM performance metadata
 """
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -23,57 +30,31 @@ from pydantic import BaseModel, Field
 
 from .pipeline import ImagePipeline
 from .config import settings
-from contextlib import asynccontextmanager
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent.parent
 frontend_dir = BASE_DIR / "frontend"
 outputs_dir = BASE_DIR / "outputs"
 models_dir = BASE_DIR / "models"
 checkpoints_dir = BASE_DIR / "checkpoints"
 loras_dir = BASE_DIR / "loras"
+presets_dir = BASE_DIR / "presets"
 
-outputs_dir.mkdir(exist_ok=True)
-models_dir.mkdir(exist_ok=True)
-checkpoints_dir.mkdir(exist_ok=True)
-loras_dir.mkdir(exist_ok=True)
+for directory in [outputs_dir, models_dir, checkpoints_dir, loras_dir, presets_dir]:
+    directory.mkdir(exist_ok=True)
 
-# ── NSFW gate config ──────────────────────────────────────────────────────────
-# Đổi mật khẩu bằng biến môi trường NSFW_PASSWORD, hoặc sửa trực tiếp dòng dưới.
-# Ví dụ CMD:
-#   set NSFW_PASSWORD=matkhaucuaban
 NSFW_PASSWORD = os.getenv("NSFW_PASSWORD", "1234")
-
-# Token local đơn giản cho app chạy trên máy cá nhân.
-# Nếu đúng mật khẩu, backend sẽ set cookie nsfw_token=unlocked.
 NSFW_COOKIE_NAME = "nsfw_token"
 NSFW_COOKIE_VALUE = "unlocked"
 
-# Từ khóa dùng để tự phân loại NSFW theo tên file.
-# Bạn có thể thêm/bớt tùy ý.
 NSFW_KEYWORDS = [
-    "nsfw",
-    "porn",
-    "pornmaster",
-    "hentai",
-    "nude",
-    "nudity",
-    "sex",
-    "sexy",
-    "xxx",
-    "18plus",
-    "18+",
-    "adult",
+    "nsfw", "porn", "pornmaster", "hentai", "nude", "nudity",
+    "sex", "sexy", "xxx", "18plus", "18+", "adult",
 ]
 
-# ── Global pipeline ───────────────────────────────────────────────────────────
 pipeline: Optional[ImagePipeline] = None
-generation_queue: list = []
-
-# ── In-memory job store ───────────────────────────────────────────────────────
 jobs: Dict[str, Dict] = {}
 
-# ── Helper functions ──────────────────────────────────────────────────────────
+
 def get_file_size_mb(item: Path) -> float:
     if item.is_dir():
         total = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
@@ -89,24 +70,9 @@ def is_model_file(item: Path) -> bool:
 
 
 def read_sidecar_metadata(item: Path) -> dict:
-    """
-    Đọc file metadata .json nằm cạnh model nếu có.
-
-    Ví dụ:
-      models/my_model.safetensors
-      models/my_model.json
-
-    Trong my_model.json có thể ghi:
-      {
-        "nsfw": true,
-        "description": "...",
-        "base_model": "SDXL"
-      }
-    """
     meta_file = item.with_suffix(".json")
     if not meta_file.exists():
         return {}
-
     try:
         with open(meta_file, encoding="utf-8") as f:
             data = json.load(f)
@@ -117,29 +83,20 @@ def read_sidecar_metadata(item: Path) -> dict:
 
 
 def detect_nsfw(item: Path, meta: Optional[dict] = None) -> bool:
-    """
-    Phân loại NSFW:
-      1. Ưu tiên metadata JSON: {"nsfw": true/false}
-      2. Nếu không có metadata, dò theo tên file bằng NSFW_KEYWORDS.
-    """
     meta = meta or {}
-
     if "nsfw" in meta:
         return bool(meta.get("nsfw"))
-
     name = item.name.lower()
     return any(keyword in name for keyword in NSFW_KEYWORDS)
 
 
 def has_nsfw_access(request: Request) -> bool:
-    """Kiểm tra cookie mở khóa NSFW."""
     return request.cookies.get(NSFW_COOKIE_NAME) == NSFW_COOKIE_VALUE
 
 
 def model_file_info(item: Path, source: str) -> dict:
     meta = read_sidecar_metadata(item)
     is_nsfw = detect_nsfw(item, meta)
-
     return {
         "name": item.name,
         "filename": item.name,
@@ -149,16 +106,17 @@ def model_file_info(item: Path, source: str) -> dict:
         "source": source,
         "category": "nsfw" if is_nsfw else "sfw",
         "nsfw": is_nsfw,
-        "description": meta.get("description", ""),
         "base_model": meta.get("base_model", "unknown"),
+        "description": meta.get("description", ""),
+        "recommended_steps": meta.get("recommended_steps", 20),
+        "recommended_cfg": meta.get("recommended_cfg", 7.0),
+        "recommended_resolution": meta.get("recommended_resolution", "768x768"),
+        "tags": meta.get("tags", []),
     }
 
 
 def find_model_by_name(model_name: str) -> Optional[Path]:
-    """Tìm model/checkpoint theo tên để chặn load NSFW khi chưa unlock."""
-    search_dirs = [models_dir, checkpoints_dir]
-
-    for search_dir in search_dirs:
+    for search_dir in [models_dir, checkpoints_dir]:
         if not search_dir.exists():
             continue
         for item in search_dir.iterdir():
@@ -168,8 +126,7 @@ def find_model_by_name(model_name: str) -> Optional[Path]:
                 return item
 
     model_name_lower = model_name.lower()
-
-    for search_dir in search_dirs:
+    for search_dir in [models_dir, checkpoints_dir]:
         if not search_dir.exists():
             continue
         for item in search_dir.iterdir():
@@ -177,22 +134,59 @@ def find_model_by_name(model_name: str) -> Optional[Path]:
                 continue
             if model_name_lower in item.name.lower():
                 return item
-
     return None
 
 
 def filter_by_nsfw_access(items: list[dict], request: Request) -> list[dict]:
-    """Không có mật khẩu: chỉ trả SFW. Có mật khẩu: trả cả SFW + NSFW."""
     if has_nsfw_access(request):
         return items
     return [item for item in items if not item.get("nsfw", False)]
 
-# ── Schemas ───────────────────────────────────────────────────────────────────
+
+def load_json_file(path: Path, fallback):
+    if not path.exists():
+        return fallback
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return fallback
+
+
+def default_character_presets() -> list[dict]:
+    return [
+        {
+            "id": "portfolio-cinematic",
+            "name": "Portfolio Cinematic Portrait",
+            "category": "style",
+            "prompt_template": "{subject}, cinematic portrait, detailed eyes, dramatic rim light, high detail, professional composition",
+            "negative_prompt": "blurry, low quality, watermark, text, deformed, bad anatomy",
+            "recommended_steps": 14,
+            "recommended_cfg": 6.5,
+            "recommended_resolution": "768x768",
+            "recommended_loras": [],
+            "description": "A general-purpose cinematic preset for portfolio screenshots."
+        },
+        {
+            "id": "character-consistency",
+            "name": "Character Consistency",
+            "category": "character",
+            "prompt_template": "{subject}, consistent character design, reference sheet style, clean linework, detailed outfit, neutral background",
+            "negative_prompt": "blurry, inconsistent face, low quality, extra limbs, text, watermark",
+            "recommended_steps": 18,
+            "recommended_cfg": 7.0,
+            "recommended_resolution": "768x768",
+            "recommended_loras": [],
+            "description": "A preset focused on stable character identity and reusable outputs."
+        }
+    ]
+
+
 class GenerateRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=1000, description="Text prompt")
+    prompt: str = Field(..., min_length=1, max_length=1500, description="Text prompt")
     negative_prompt: str = Field(default="", description="Negative prompt")
-    width: int = Field(default=512, ge=256, le=2048, description="Image width")
-    height: int = Field(default=512, ge=256, le=2048, description="Image height")
+    width: int = Field(default=512, ge=256, le=1536, description="Image width")
+    height: int = Field(default=512, ge=256, le=1536, description="Image height")
     steps: int = Field(default=20, ge=1, le=100, description="Inference steps")
     guidance_scale: float = Field(default=7.5, ge=1.0, le=20.0, description="CFG scale")
     seed: int = Field(default=-1, description="Random seed (-1 = random)")
@@ -200,11 +194,9 @@ class GenerateRequest(BaseModel):
     lora_names: List[str] = Field(default_factory=list, description="LoRA filenames to apply")
     lora_scales: List[float] = Field(default_factory=list, description="Scale per LoRA")
     clip_skip: int = Field(default=1, ge=1, le=4, description="CLIP Skip")
-    # Performance & memory controls
     performance_mode: str = Field(default="fast", description="fast | balanced | quality")
     vram_mode: str = Field(default="balanced", description="max_speed | balanced | low_vram | ultra_low_vram")
-    vram_limit_gb: float = Field(default=0, ge=0, description="Max VRAM in GB (0 = no limit)")
-    ram_limit_gb: float = Field(default=0, ge=0, description="Min free RAM in GB guard (0 = no limit)")
+    ram_limit_gb: float = Field(default=0, ge=0, le=256, description="Soft RAM guard in GB. 0 = disabled")
 
 
 class LoadModelRequest(BaseModel):
@@ -214,6 +206,10 @@ class LoadModelRequest(BaseModel):
 class ApplyLoraRequest(BaseModel):
     lora_names: List[str] = Field(..., description="LoRA filenames to apply")
     lora_scales: List[float] = Field(default_factory=list, description="Scale per LoRA")
+
+
+class NSFWLoginRequest(BaseModel):
+    password: str = Field(..., description="NSFW unlock password")
 
 
 class GenerateResponse(BaseModel):
@@ -233,34 +229,28 @@ class JobStatus(BaseModel):
     metadata: Optional[Dict]
 
 
-class NSFWLoginRequest(BaseModel):
-    password: str = Field(..., description="NSFW unlock password")
-
-# ── Startup / Shutdown ────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pipeline
-    print("[AI Studio] Starting server...")
-
+    print("[CharacterForge AI] Starting server...")
     try:
         pipeline = ImagePipeline(settings)
         await pipeline.load()
-        print("[AI Studio] Model loaded OK!")
+        print("[CharacterForge AI] Model loaded OK!")
     except Exception as e:
-        print(f"[AI Studio] Model not loaded: {e}")
+        print(f"[CharacterForge AI] Model not loaded: {e}")
         print("  -> Place your model in /models or /checkpoints and restart.")
-
     yield
-
     if pipeline:
         pipeline.unload()
-    print("Server shutting down.")
+    print("[CharacterForge AI] Server shutting down.")
+
 
 app = FastAPI(
-    title="AI Text-to-Image API",
-    description="Generate images from text prompts using AI",
+    title="CharacterForge AI",
+    description="Local AI character generation studio powered by FastAPI, PyTorch, and HuggingFace Diffusers.",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -270,7 +260,35 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
-# ── Auth / NSFW Routes ────────────────────────────────────────────────────────
+
+
+@app.get("/api/product")
+async def product_info():
+    return {
+        "name": "CharacterForge AI",
+        "tagline": "Local AI Character Generation Studio",
+        "author": "SD / @phucvb588",
+        "description": (
+            "A local-first AI image generation app focused on character creation, LoRA workflows, "
+            "metadata-driven model management, gallery history, content access control, "
+            "and CUDA/VRAM optimized inference."
+        ),
+        "tech_stack": [
+            "Python 3.11", "FastAPI", "PyTorch CUDA", "HuggingFace Diffusers",
+            "Transformers", "Safetensors", "Vanilla JavaScript", "HTML/CSS"
+        ],
+        "features": [
+            "Stable Diffusion / SDXL checkpoint loading",
+            "LoRA management with runtime scale control",
+            "Character and style preset API",
+            "Async generation queue with progress polling",
+            "Gallery with metadata output",
+            "SFW/NSFW content access control",
+            "CUDA acceleration and VRAM modes",
+        ],
+    }
+
+
 @app.get("/api/auth/nsfw-status")
 async def nsfw_status(request: Request):
     return {"unlocked": has_nsfw_access(request)}
@@ -280,7 +298,6 @@ async def nsfw_status(request: Request):
 async def unlock_nsfw(payload: NSFWLoginRequest, response: Response):
     if payload.password != NSFW_PASSWORD:
         raise HTTPException(status_code=401, detail="Wrong NSFW password")
-
     response.set_cookie(
         key=NSFW_COOKIE_NAME,
         value=NSFW_COOKIE_VALUE,
@@ -288,54 +305,14 @@ async def unlock_nsfw(payload: NSFWLoginRequest, response: Response):
         samesite="lax",
         max_age=60 * 60 * 12,
     )
-
-    return {
-        "status": "ok",
-        "unlocked": True,
-        "message": "NSFW models unlocked",
-    }
+    return {"status": "ok", "unlocked": True, "message": "NSFW models unlocked"}
 
 
 @app.post("/api/auth/nsfw-logout")
 async def lock_nsfw(response: Response):
     response.delete_cookie(NSFW_COOKIE_NAME)
-    return {
-        "status": "ok",
-        "unlocked": False,
-        "message": "NSFW models locked",
-    }
+    return {"status": "ok", "unlocked": False, "message": "NSFW models locked"}
 
-# ── API Routes ────────────────────────────────────────────────────────────────
-@app.get("/api/system-info")
-async def system_info():
-    """Return GPU / VRAM / RAM info for the frontend."""
-    global pipeline
-    if pipeline:
-        return pipeline.get_system_info()
-    # Fallback if pipeline not loaded yet
-    info: dict = {"device": "unknown", "gpu_name": None, "vram_total_gb": None,
-                  "vram_used_gb": None, "vram_free_gb": None,
-                  "ram_total_gb": None, "ram_available_gb": None, "compiled": False}
-    try:
-        import torch
-        if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            info["gpu_name"] = props.name
-            info["device"] = "cuda"
-            info["vram_total_gb"] = round(props.total_memory / 1e9, 2)
-            mem = torch.cuda.mem_get_info(0)
-            info["vram_free_gb"] = round(mem[0] / 1e9, 2)
-            info["vram_used_gb"] = round((props.total_memory - mem[0]) / 1e9, 2)
-    except Exception:
-        pass
-    try:
-        import psutil
-        vm = psutil.virtual_memory()
-        info["ram_total_gb"] = round(vm.total / 1e9, 2)
-        info["ram_available_gb"] = round(vm.available / 1e9, 2)
-    except Exception:
-        pass
-    return info
 
 @app.get("/api/health")
 async def health():
@@ -343,6 +320,7 @@ async def health():
     model_info = pipeline.get_info() if pipeline and pipeline.is_loaded else None
     return {
         "status": "ok",
+        "app": "CharacterForge AI",
         "model_loaded": pipeline.is_loaded if pipeline else False,
         "model_info": model_info,
         "server_time": datetime.now().isoformat(),
@@ -351,7 +329,6 @@ async def health():
 
 @app.get("/api/models")
 async def list_models(request: Request):
-    """List base models in /models. Without NSFW password, returns SFW only."""
     models = []
     if models_dir.exists():
         for item in models_dir.iterdir():
@@ -362,7 +339,6 @@ async def list_models(request: Request):
 
 @app.get("/api/checkpoints")
 async def list_checkpoints(request: Request):
-    """List checkpoints in /checkpoints. Without NSFW password, returns SFW only."""
     checkpoints = []
     if checkpoints_dir.exists():
         for item in checkpoints_dir.iterdir():
@@ -373,7 +349,6 @@ async def list_checkpoints(request: Request):
 
 @app.get("/api/loras")
 async def list_loras():
-    """List all LoRA files in /loras directory."""
     loras = []
     if loras_dir.exists():
         for item in loras_dir.glob("*.safetensors"):
@@ -389,9 +364,16 @@ async def list_loras():
                 "base_model": meta.get("base_model", "unknown"),
                 "trigger_words": meta.get("trigger_words", []),
                 "recommended_scale": meta.get("recommended_scale", 0.8),
+                "tags": meta.get("tags", []),
                 "nsfw": detect_nsfw(item, meta),
             })
     return loras
+
+
+@app.get("/api/presets")
+async def list_presets():
+    preset_file = presets_dir / "character_presets.json"
+    return load_json_file(preset_file, default_character_presets())
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
@@ -443,7 +425,6 @@ async def delete_job(job_id: str):
 
 @app.get("/api/gallery")
 async def gallery(limit: int = 50):
-    """Return list of all generated images."""
     images = []
     if outputs_dir.exists():
         png_files = sorted(outputs_dir.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True)
@@ -467,12 +448,6 @@ async def gallery(limit: int = 50):
 
 @app.post("/api/load-model")
 async def load_model(request: LoadModelRequest, http_request: Request):
-    """
-    Dynamically reload a different base model / checkpoint without restarting.
-
-    Nếu model/checkpoint là NSFW và người dùng chưa nhập mật khẩu,
-    backend sẽ chặn bằng lỗi 403.
-    """
     global pipeline
     if not pipeline:
         raise HTTPException(status_code=500, detail="Pipeline not initialised")
@@ -492,7 +467,6 @@ async def load_model(request: LoadModelRequest, http_request: Request):
 
 @app.post("/api/loras/apply")
 async def apply_loras(request: ApplyLoraRequest):
-    """Apply LoRA weights on top of the currently loaded base model."""
     global pipeline
     if not pipeline or not pipeline.is_loaded:
         raise HTTPException(status_code=503, detail="Base model not loaded")
@@ -505,7 +479,6 @@ async def apply_loras(request: ApplyLoraRequest):
 
 @app.post("/api/loras/clear")
 async def clear_loras():
-    """Remove all active LoRAs from the pipeline."""
     global pipeline
     if not pipeline or not pipeline.is_loaded:
         raise HTTPException(status_code=503, detail="Base model not loaded")
@@ -513,28 +486,6 @@ async def clear_loras():
     return {"status": "ok", "active_loras": []}
 
 
-@app.post("/api/models/download")
-async def download_model(url: str, filename: str, folder: str = "models"):
-    """Download a model file from a URL."""
-    import httpx
-    save_dir = BASE_DIR / folder
-    save_dir.mkdir(exist_ok=True)
-    save_path = save_dir / filename
-
-    async def _download():
-        async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
-            async with client.stream("GET", url) as response:
-                if response.status_code != 200:
-                    print(f"Download failed: {response.status_code}")
-                    return
-                with open(save_path, "wb") as f:
-                    async for chunk in response.aiter_bytes():
-                        f.write(chunk)
-        print(f"Downloaded: {filename}")
-
-    return {"status": "started", "message": f"Downloading {filename} to /{folder}..."}
-
-# ── Background task ───────────────────────────────────────────────────────────
 async def run_generation(job_id: str, request: GenerateRequest):
     global pipeline
     jobs[job_id]["status"] = "running"
@@ -560,18 +511,19 @@ async def run_generation(job_id: str, request: GenerateRequest):
             clip_skip=request.clip_skip,
             performance_mode=request.performance_mode,
             vram_mode=request.vram_mode,
-            vram_limit_gb=request.vram_limit_gb,
             ram_limit_gb=request.ram_limit_gb,
             progress_callback=progress_callback,
         )
 
         elapsed = round(time.time() - start_time, 2)
         image_urls = []
+        last_generation = pipeline.get_last_generation_info() if pipeline else {}
 
         for i, image in enumerate(images):
             filename = f"{job_id}_{i}.png"
             filepath = outputs_dir / filename
             image.save(str(filepath), "PNG")
+
             meta = {
                 "prompt": request.prompt,
                 "negative_prompt": request.negative_prompt,
@@ -582,8 +534,12 @@ async def run_generation(job_id: str, request: GenerateRequest):
                 "seed": request.seed,
                 "lora_names": request.lora_names,
                 "lora_scales": request.lora_scales,
+                "clip_skip": request.clip_skip,
+                "performance_mode": request.performance_mode,
+                "vram_mode": request.vram_mode,
                 "model": pipeline.get_info().get("name", "") if pipeline else "",
                 "elapsed_seconds": elapsed,
+                "pipeline_metrics": last_generation,
                 "generated_at": datetime.now().isoformat(),
             }
             with open(filepath.with_suffix(".json"), "w", encoding="utf-8") as mf:
@@ -595,18 +551,65 @@ async def run_generation(job_id: str, request: GenerateRequest):
             "progress": 100,
             "images": image_urls,
             "completed_at": datetime.now().isoformat(),
-            "metadata": {"elapsed_seconds": elapsed},
+            "metadata": {"elapsed_seconds": elapsed, "pipeline_metrics": last_generation},
         })
-
     except Exception as e:
-        jobs[job_id].update({
-            "status": "error",
-            "error": str(e),
-            "completed_at": datetime.now().isoformat(),
-        })
+        jobs[job_id].update({"status": "error", "error": str(e), "completed_at": datetime.now().isoformat()})
         print(f"Generation error for job {job_id}: {e}")
 
-# ── Static mounts: keep these LAST so they do not override /api routes ─────────
+@app.get("/api/system-info")
+async def system_info():
+    info = {
+        "device": "cpu",
+        "cuda_available": False,
+        "gpu_name": None,
+        "torch_version": None,
+        "cuda_version": None,
+        "ram": None,
+        "vram": None,
+    }
+
+    try:
+        import torch
+
+        info["torch_version"] = torch.__version__
+        info["cuda_available"] = torch.cuda.is_available()
+        info["cuda_version"] = torch.version.cuda
+
+        if torch.cuda.is_available():
+            info["device"] = "cuda"
+            info["gpu_name"] = torch.cuda.get_device_name(0)
+
+            try:
+                free_vram, total_vram = torch.cuda.mem_get_info()
+                info["vram"] = {
+                    "free_gb": round(free_vram / (1024 ** 3), 2),
+                    "total_gb": round(total_vram / (1024 ** 3), 2),
+                    "used_gb": round((total_vram - free_vram) / (1024 ** 3), 2),
+                }
+            except Exception:
+                info["vram"] = None
+
+    except Exception as e:
+        info["torch_error"] = str(e)
+
+    try:
+        import psutil
+
+        mem = psutil.virtual_memory()
+        info["ram"] = {
+            "total_gb": round(mem.total / (1024 ** 3), 2),
+            "available_gb": round(mem.available / (1024 ** 3), 2),
+            "used_gb": round(mem.used / (1024 ** 3), 2),
+            "percent": mem.percent,
+        }
+    except Exception as e:
+        info["ram_error"] = str(e)
+
+    return info
+
+
+
 if outputs_dir.exists():
     app.mount("/outputs", StaticFiles(directory=str(outputs_dir)), name="outputs")
 
