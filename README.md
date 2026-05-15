@@ -108,7 +108,7 @@ AI/
 ## Setup
 
 ```bat
-cd /d E:\AI
+# Navigate to the project directory
 py -3.11 -m venv venv
 venv\Scripts\activate
 python -m pip install -r requirements.txt
@@ -132,7 +132,7 @@ python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_
 ## Run
 
 ```bat
-cd /d E:\AI
+# Navigate to the project directory
 venv\Scripts\activate
 start.bat
 ```
@@ -337,35 +337,6 @@ Built a local AI character generation web application using FastAPI, PyTorch, Hu
 
 ---
 
-## GitHub Notes
-
-Do not upload large model files to GitHub.
-
-Recommended `.gitignore`:
-
-```gitignore
-venv/
-env/
-__pycache__/
-*.pyc
-.env
-
-models/
-checkpoints/
-loras/
-outputs/
-
-*.safetensors
-*.ckpt
-*.bin
-*.pt
-*.pth
-
-.vscode/
-.DS_Store
-```
-
----
 
 ## License
 
