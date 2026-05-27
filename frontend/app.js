@@ -1,6 +1,45 @@
 /* ── AI Studio Frontend App ──────────────────────────────────────────────── */
 const API = '';  // Same origin
 
+// --- Authentication ---
+const urlParams = new URLSearchParams(window.location.search);
+const urlToken = urlParams.get('token');
+if (urlToken) {
+    localStorage.setItem('jwt_token', urlToken);
+    window.history.replaceState({}, document.title, window.location.pathname);
+}
+
+function updateAuthUI() {
+    const token = localStorage.getItem('jwt_token');
+    const btnGoogle = document.getElementById('btn-login-google');
+    const btnFacebook = document.getElementById('btn-login-facebook');
+    const userInfo = document.getElementById('user-info');
+    
+    if (token) {
+        if(btnGoogle) btnGoogle.style.display = 'none';
+        if(btnFacebook) btnFacebook.style.display = 'none';
+        if(userInfo) userInfo.style.display = 'flex';
+        try {
+            const payload = JSON.parse(atob(token.split('.')[1]));
+            document.getElementById('user-name').textContent = payload.name || payload.sub || 'User';
+        } catch(e) {
+            document.getElementById('user-name').textContent = 'Logged In';
+        }
+    } else {
+        if(btnGoogle) btnGoogle.style.display = 'flex';
+        if(btnFacebook) btnFacebook.style.display = 'flex';
+        if(userInfo) userInfo.style.display = 'none';
+    }
+}
+
+window.logout = function() {
+    localStorage.removeItem('jwt_token');
+    updateAuthUI();
+};
+
+document.addEventListener('DOMContentLoaded', updateAuthUI);
+// ----------------------
+
 /* ── State ──────────────────────────────────────────────────────────────── */
 const state = {
   currentTab: 'generate',
@@ -33,16 +72,16 @@ const state = {
 
 /* ── Random prompts ──────────────────────────────────────────────────────── */
 const RANDOM_PROMPTS = [
-  "a majestic dragon flying over a neon-lit cyberpunk city at night, ultra detailed, cinematic lighting, 4k, artstation",
-  "beautiful fantasy forest with glowing mushrooms and fairy lights, magical atmosphere, digital art, highly detailed",
-  "portrait of a cyberpunk girl with neon blue eyes and chrome implants, futuristic, cinematic, octane render",
-  "epic space battle between alien ships and human fleet, nebula background, 8k, detailed, sci-fi concept art",
-  "ancient japanese temple in cherry blossom forest, misty morning, photorealistic, 4k, serene atmosphere",
-  "underwater city ruins with glowing marine life, bioluminescent, dramatic lighting, hyperdetailed, digital painting",
-  "steampunk mechanical owl with brass gears and glowing eyes, dark background, studio lighting, ultra detailed",
-  "aurora borealis over a snowy arctic landscape with wolf pack, dramatic sky, photorealistic, stunning",
-  "a lone samurai standing on a cliff during sunset, silhouette, cinematic composition, epic fantasy art",
-  "futuristic megacity with flying cars and holographic advertisements, rain, neon reflections, blade runner style",
+  "nico robin from one piece, reading a book in a sunlit library, wearing her post-timeskip outfit, beautiful black hair, highly detailed, cinematic lighting, 4k",
+  "masterpiece, best quality, nico robin, one piece, using hana hana no mi powers, cherry blossoms flying, dynamic pose, vivid colors, anime style",
+  "nico robin, archaeologist, exploring ancient ruins, glowing mysterious poneglyph, dramatic lighting, highly detailed, digital art",
+  "portrait of nico robin, one piece, wearing sunglasses and a stylish summer hat, tropical background, bright sunlight, beautiful eyes, 8k, photorealistic",
+  "nico robin, one piece, in a stunning evening dress, elegant, holding a wine glass, moonlight, sophisticated atmosphere, masterpiece, detailed face",
+  "nico robin, one piece, action scene, giant arms sprouting from the ground, intense expression, epic composition, high quality anime art",
+  "nico robin, one piece, wearing her pre-timeskip cowboy hat and purple corset, confident smile, sunny day, detailed character design",
+  "1girl, nico robin, one piece, sitting on the deck of the thousand sunny, drinking coffee, peaceful morning, highly detailed, 4k",
+  "masterpiece, nico robin, one piece, elegant mature woman, long black hair, piercing blue eyes, realistic rendering, intricate details, artstation",
+  "nico robin, one piece, studying an ancient map, candle light, cozy room, shadows, cinematic depth of field, high quality"
 ];
 
 
@@ -131,6 +170,44 @@ function initTabs() {
       switchTab(tab);
     });
   });
+
+  // Sidebar inner tabs
+  const btnParams = document.getElementById('btn-sidebar-params');
+  const btnSettings = document.getElementById('btn-sidebar-settings');
+  const contentParams = document.getElementById('sidebar-params-content');
+  const contentSettings = document.getElementById('sidebar-settings-content');
+
+  if (btnParams && btnSettings) {
+    btnParams.addEventListener('click', () => {
+      btnParams.classList.add('active');
+      btnParams.style.background = 'rgba(124,92,252,0.15)';
+      btnParams.style.color = 'var(--primary-2)';
+      btnParams.style.fontWeight = 'bold';
+
+      btnSettings.classList.remove('active');
+      btnSettings.style.background = 'transparent';
+      btnSettings.style.color = 'var(--text-2)';
+      btnSettings.style.fontWeight = 'normal';
+
+      contentParams.style.display = 'block';
+      contentSettings.style.display = 'none';
+    });
+
+    btnSettings.addEventListener('click', () => {
+      btnSettings.classList.add('active');
+      btnSettings.style.background = 'rgba(124,92,252,0.15)';
+      btnSettings.style.color = 'var(--primary-2)';
+      btnSettings.style.fontWeight = 'bold';
+
+      btnParams.classList.remove('active');
+      btnParams.style.background = 'transparent';
+      btnParams.style.color = 'var(--text-2)';
+      btnParams.style.fontWeight = 'normal';
+
+      contentSettings.style.display = 'block';
+      contentParams.style.display = 'none';
+    });
+  }
 }
 
 function switchTab(tab) {
@@ -145,7 +222,6 @@ function switchTab(tab) {
   });
 
   if (tab === 'gallery') loadGallery();
-  if (tab === 'settings') loadSettings();
 }
 
 
@@ -250,6 +326,21 @@ function initControls() {
     }
   });
 
+  // Sample negative prompt
+  const btnSampleNegative = document.getElementById('btn-sample-negative');
+  if (btnSampleNegative) {
+    btnSampleNegative.addEventListener('click', () => {
+      const input = document.getElementById('negative-input');
+      if (state.nsfwMode) {
+        input.value = "censored, mosaic, bar censor, blurry, ugly, deformed, bad anatomy, worst quality, low quality, text, watermark, signature, extra digit, missing limbs";
+        showToast('🎲 Đã điền mẫu Negative NSFW', 'info');
+      } else {
+        input.value = "nsfw, nude, explicit, nipple, porn, blurry, ugly, deformed, bad anatomy, worst quality, low quality, text, watermark, signature, extra digit, missing limbs";
+        showToast('🎲 Đã điền mẫu Negative SFW', 'info');
+      }
+    });
+  }
+
   // Random seed button
   document.getElementById('btn-random-seed').addEventListener('click', () => {
     const newSeed = Math.floor(Math.random() * 4294967295);
@@ -266,7 +357,7 @@ function initPerfControls() {
   // Performance mode
   const perfSelect = document.getElementById('perf-mode-select');
   const perfLabel  = document.getElementById('perf-mode-label');
-  const perfLabels = { fast: 'Fast', balanced: 'Balanced', quality: 'Quality' };
+  const perfLabels = { turbo: 'Turbo', fast: 'Fast', balanced: 'Balanced', quality: 'Quality' };
 
   perfSelect.addEventListener('change', () => {
     state.performanceMode = perfSelect.value;
@@ -318,17 +409,17 @@ async function loadSystemInfo() {
     if (!gpuEl) return;
 
     gpuEl.textContent  = info.gpu_name ? `GPU: ${info.gpu_name}` : 'GPU: CPU only';
-    vramEl.textContent = info.vram_total_gb
-      ? `VRAM: ${info.vram_used_gb}/${info.vram_total_gb} GB`
+    vramEl.textContent = info.vram && info.vram.total_gb
+      ? `VRAM: ${info.vram.used_gb}/${info.vram.total_gb} GB`
       : 'VRAM: N/A';
-    ramEl.textContent  = info.ram_available_gb
-      ? `RAM: ${info.ram_available_gb} GB free`
+    ramEl.textContent  = info.ram && info.ram.available_gb
+      ? `RAM: ${info.ram.available_gb} GB free`
       : 'RAM: N/A';
 
     // Auto-set VRAM slider max to match actual GPU
-    if (info.vram_total_gb) {
+    if (info.vram && info.vram.total_gb) {
       const slider = document.getElementById('vram-limit-slider');
-      if (slider) slider.max = Math.ceil(info.vram_total_gb);
+      if (slider) slider.max = Math.ceil(info.vram.total_gb);
     }
   } catch {
     // silently ignore
@@ -351,6 +442,12 @@ async function startGeneration() {
 
   const btn = document.getElementById('btn-generate');
   const btnText = document.getElementById('btn-generate-text');
+
+  // Auto random seed every time
+  const newSeed = Math.floor(Math.random() * 4294967295);
+  state.seed = newSeed;
+  document.getElementById('seed-input').value = newSeed;
+  document.getElementById('seed-display').textContent = newSeed;
 
   btn.disabled = true;
   btnText.textContent = 'Generating...';
@@ -391,9 +488,13 @@ async function startGeneration() {
       ram_limit_gb: state.ramLimitGb,
     };
 
+    const headers = { 'Content-Type': 'application/json' };
+    const token = localStorage.getItem('jwt_token');
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     const res = await fetch(`${API}/api/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
       body: JSON.stringify(payload),
     });
 
@@ -502,7 +603,29 @@ function createImageCard(url, meta = {}) {
     openLightbox(url, meta);
   });
 
-  overlay.append(downloadBtn, expandBtn);
+  const deleteBtn = document.createElement('button');
+  deleteBtn.textContent = '🗑️ Delete';
+  deleteBtn.style.background = 'rgba(239, 68, 68, 0.8)';
+  
+  deleteBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    if (confirm('Are you sure you want to delete this image?')) {
+      const filename = url.split('/').pop();
+      try {
+        const res = await fetch(`${API}/api/gallery/${filename}`, { method: 'DELETE' });
+        if (res.ok) {
+          card.remove();
+          showToast('Image deleted', 'success');
+        } else {
+          showToast('Failed to delete', 'error');
+        }
+      } catch {
+        showToast('Error deleting image', 'error');
+      }
+    }
+  });
+
+  overlay.append(downloadBtn, expandBtn, deleteBtn);
   card.append(img, overlay);
   card.addEventListener('click', () => openLightbox(url, meta));
 
@@ -595,8 +718,8 @@ function renderModelItems(items, emptyText) {
 
   return items.map(m => `
     <div class="model-item ${m.nsfw ? 'model-item-nsfw' : 'model-item-sfw'}">
-      <div>
-        <div class="model-item-name">${m.name} ${nsfwBadgeHtml(m)}</div>
+      <div style="min-width: 0; flex: 1;">
+        <div class="model-item-name"><span class="truncate" title="${m.name}">${m.name}</span> ${nsfwBadgeHtml(m)}</div>
         <div class="model-item-meta">${m.type} · ${m.size_mb} MB · ${m.source || 'models'}</div>
       </div>
     </div>
@@ -827,6 +950,7 @@ function updateNsfwUI() {
   const btn = document.getElementById('nsfw-toggle');
   const icon = document.getElementById('nsfw-icon');
   const label = document.getElementById('nsfw-label');
+  const negativeInput = document.getElementById('negative-input');
 
   if (!btn || !icon || !label) return;
 
@@ -834,10 +958,12 @@ function updateNsfwUI() {
     btn.classList.add('nsfw-on');
     icon.textContent = '🔞';
     label.textContent = 'NSFW Unlocked';
+    if (negativeInput) negativeInput.placeholder = "censored, blurry, ugly, deformed, bad anatomy, text...";
   } else {
     btn.classList.remove('nsfw-on');
     icon.textContent = '🔒';
     label.textContent = 'SFW Only';
+    if (negativeInput) negativeInput.placeholder = "nsfw, nude, explicit, blurry, ugly, deformed, bad anatomy, text...";
   }
 }
 
@@ -1009,6 +1135,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initLoraPicker();
   loadSystemInfo();
   setInterval(loadSystemInfo, 30000);   // refresh system info every 30s
+  loadSettings();
 
   // Lightbox close
   document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
@@ -1023,6 +1150,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Gallery refresh
   document.getElementById('btn-refresh-gallery').addEventListener('click', loadGallery);
+
+  // Delete all gallery
+  const btnDeleteAllGallery = document.getElementById('btn-delete-all-gallery');
+  if (btnDeleteAllGallery) {
+    btnDeleteAllGallery.addEventListener('click', async () => {
+      if (confirm('Are you sure you want to delete ALL generated images? This cannot be undone.')) {
+        try {
+          const res = await fetch(`${API}/api/gallery`, { method: 'DELETE' });
+          if (res.ok) {
+            showToast('All images deleted', 'success');
+            loadGallery();
+          } else {
+            showToast('Failed to delete all images', 'error');
+          }
+        } catch {
+          showToast('Error deleting images', 'error');
+        }
+      }
+    });
+  }
 
   // Clear LoRAs
   document.getElementById('btn-clear-loras').addEventListener('click', () => {

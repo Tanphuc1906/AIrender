@@ -29,14 +29,29 @@
       <nav class="nav">
         <button class="nav-btn active" data-tab="generate" id="nav-generate">Generate</button>
         <button class="nav-btn" data-tab="gallery" id="nav-gallery">Gallery</button>
-        <button class="nav-btn" data-tab="settings" id="nav-settings">Settings</button>
       </nav>
 
       <!-- NSFW Toggle -->
-      <button class="nsfw-toggle" id="nsfw-toggle" title="Bật/tắt chế độ NSFW">
+      <button class="nsfw-toggle" id="nsfw-toggle" title="Bật/tắt chế độ NSFW" style="margin-right: 8px;">
         <span class="nsfw-icon" id="nsfw-icon">🔒</span>
         <span class="nsfw-label" id="nsfw-label">Safe</span>
       </button>
+
+      <!-- Auth -->
+      <div class="auth-section" id="auth-section" style="display: flex; gap: 8px; margin-right: 16px; align-items: center;">
+        <button class="btn-ghost btn-sm" id="btn-login-google" onclick="window.location.href='/api/auth/google/login'" style="display: flex; align-items: center; gap: 4px; padding: 4px 8px;">
+          <svg style="width:16px;height:16px" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+          Google
+        </button>
+        <button class="btn-ghost btn-sm" id="btn-login-facebook" onclick="loginWithFacebook()" style="display: flex; align-items: center; gap: 4px; padding: 4px 8px;">
+          <svg style="width:16px;height:16px" viewBox="0 0 24 24"><path fill="#1877F2" d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.469h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.469h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+          Facebook
+        </button>
+        <div id="user-info" style="display: none; align-items: center; gap: 8px;">
+          <span id="user-name" style="font-size: 0.9em; font-weight: 500; color: var(--text-2);"></span>
+          <button class="btn-ghost btn-sm" id="btn-logout" onclick="logout()" style="color: #ff4a4a;">Logout</button>
+        </div>
+      </div>
 
       <div class="header-status">
         <div class="status-dot" id="status-dot"></div>
@@ -55,6 +70,12 @@
 
         <!-- Left: Controls -->
         <aside class="controls-panel">
+          <div class="sidebar-tabs" style="display: flex; gap: 8px; margin-bottom: 16px; background: var(--bg-2); padding: 6px; border-radius: var(--radius); border: 1px solid var(--border);">
+            <button class="btn-ghost active" id="btn-sidebar-params" style="flex: 1; border:none; background: rgba(124,92,252,0.15); color: var(--primary-2); font-weight: bold;">Parameters</button>
+            <button class="btn-ghost" id="btn-sidebar-settings" style="flex: 1; border:none;">Settings</button>
+          </div>
+
+          <div id="sidebar-params-content">
           <div class="panel-card">
             <h2 class="panel-title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -68,7 +89,7 @@
               <textarea
                 id="prompt-input"
                 class="textarea"
-                placeholder="a majestic dragon flying over a neon-lit cyberpunk city, ultra detailed, cinematic lighting, 4k..."
+                placeholder="masterpiece, best quality, nico robin, one piece, reading a book, ultra detailed, cinematic lighting, 4k..."
                 rows="4"
               ></textarea>
               <div class="prompt-actions">
@@ -89,6 +110,11 @@
                 placeholder="blurry, ugly, deformed, low quality, watermark, text, nsfw..."
                 rows="2"
               ></textarea>
+              <div class="prompt-actions">
+                <button class="btn-ghost btn-sm" id="btn-sample-negative" title="Mẫu negative prompt">
+                  🎲 Mẫu Negative
+                </button>
+              </div>
             </div>
           </div>
 
@@ -152,9 +178,9 @@
               <div class="slider-group full-width">
                 <div class="slider-header">
                   <label class="input-label">CLIP Skip</label>
-                  <span class="slider-value" id="clip-skip-value">1</span>
+                  <span class="slider-value" id="clip-skip-value">2</span>
                 </div>
-                <input type="range" id="clip-skip-slider" class="slider" min="1" max="4" value="1" />
+                <input type="range" id="clip-skip-slider" class="slider" min="1" max="4" value="2" />
               </div>
             </div>
 
@@ -192,6 +218,7 @@
                   <span class="slider-value" id="perf-mode-label">Fast</span>
                 </div>
                 <select id="perf-mode-select" class="input-field select-field">
+                  <option value="turbo">🏎️ Turbo (Torch Compile + max speed)</option>
                   <option value="fast" selected>⚡ Fast (fewer steps, lower resolution cap)</option>
                   <option value="balanced">⚖️ Balanced (moderate quality &amp; speed)</option>
                   <option value="quality">🎨 Quality (full user settings)</option>
@@ -255,7 +282,84 @@
               <button class="btn-ghost btn-sm" id="btn-clear-loras">✕ Clear</button>
             </div>
           </div>
+
+          </div> <!-- End sidebar-params-content -->
+
+          <div id="sidebar-settings-content" style="display: none;">
+          <!-- Settings inline -->
+          <div class="panel-card">
+            <h2 class="panel-title">🤖 Model Info</h2>
+            <div id="model-info-display" class="info-grid">
+              <div class="info-row"><span>Status</span><span id="model-status-badge" class="badge">Loading...</span></div>
+              <div class="info-row"><span>Name</span><span id="model-name-val">—</span></div>
+              <div class="info-row"><span>Device</span><span id="model-device-val">—</span></div>
+              <div class="info-row"><span>Type</span><span id="model-type-val">—</span></div>
+              <div class="info-row"><span>Active LoRAs</span><span id="model-lora-val">—</span></div>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <h2 class="panel-title">📁 Base Models <span class="hint-inline">/models</span></h2>
+            <div id="models-list" class="models-list">
+              <p class="muted">Scanning /models directory...</p>
+            </div>
+            <p class="hint-text">Place model files (.safetensors, .ckpt) or HuggingFace folders inside <code>/models</code>.</p>
+          </div>
+
+          <div class="panel-card">
+            <h2 class="panel-title">💾 Checkpoints <span class="hint-inline">/checkpoints</span></h2>
+            <div id="checkpoints-list" class="models-list">
+              <p class="muted">Scanning /checkpoints directory...</p>
+            </div>
+            <div class="switch-model-form">
+              <label class="input-label">Switch to a different model (no restart needed):</label>
+              <div class="seed-row" style="margin-top:8px">
+                <select id="switch-model-select" class="input-field">
+                  <option value="">— Select model —</option>
+                </select>
+                <button class="btn-primary" id="btn-switch-model">⚡ Load</button>
+              </div>
+            </div>
+            <p class="hint-text" style="margin-top:12px">Place checkpoint files (.safetensors, .ckpt) inside <code>/checkpoints</code>.</p>
+          </div>
+
+          <div class="panel-card">
+            <h2 class="panel-title">☁️ Download Model from URL</h2>
+            <div class="settings-form">
+              <div class="input-group">
+                <label class="input-label">Direct Download URL (HuggingFace, GitHub, etc.)</label>
+                <input type="text" id="dl-url" class="input-field" placeholder="https://huggingface.co/.../model.safetensors" />
+              </div>
+              <div class="seed-row">
+                <input type="text" id="dl-filename" class="input-field" placeholder="filename.safetensors" />
+                <select id="dl-folder" class="input-field" style="max-width:140px">
+                  <option value="models">/models</option>
+                  <option value="checkpoints">/checkpoints</option>
+                  <option value="loras">/loras</option>
+                </select>
+                <button class="btn-primary" id="btn-download-model">⬇ Download</button>
+              </div>
+              <p class="hint-text">Note: This runs in the background. Check server console for progress.</p>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <h2 class="panel-title">⚙️ Default Parameters</h2>
+            <div class="settings-form">
+              <div class="form-row">
+                <label>Default Steps</label>
+                <input type="number" id="pref-steps" class="input-field" value="20" min="1" max="100" />
+              </div>
+              <div class="form-row">
+                <label>Default CFG Scale</label>
+                <input type="number" id="pref-cfg" class="input-field" value="7.5" step="0.5" min="1" max="20" />
+              </div>
+              <button class="btn-primary" id="btn-save-prefs">Save Preferences</button>
+            </div>
+          </div>
+          </div> <!-- End sidebar-settings-content -->
         </aside>
+
 
         <!-- Right: Output -->
         <div class="output-panel">
@@ -293,91 +397,16 @@
       <div class="gallery-header">
         <h1 class="page-title">Gallery</h1>
         <p class="page-sub">All your generated images</p>
-        <button class="btn-ghost" id="btn-refresh-gallery">↺ Refresh</button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-ghost" id="btn-refresh-gallery">↺ Refresh</button>
+          <button class="btn-ghost" id="btn-delete-all-gallery" style="color: #ff4a4a;">🗑 Delete All</button>
+        </div>
       </div>
       <div class="gallery-grid" id="gallery-grid">
         <div class="empty-state">
           <div class="empty-icon">🖼️</div>
           <p class="empty-title">No images yet</p>
           <p class="empty-sub">Generated images will appear here</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── SETTINGS TAB ─────────────────────────────────────────────────── -->
-    <section class="tab-panel" id="tab-settings">
-      <div class="settings-layout">
-        <h1 class="page-title">Settings</h1>
-
-        <div class="settings-card">
-          <h3 class="settings-section-title">🤖 Model Info</h3>
-          <div id="model-info-display" class="info-grid">
-            <div class="info-row"><span>Status</span><span id="model-status-badge" class="badge">Loading...</span></div>
-            <div class="info-row"><span>Name</span><span id="model-name-val">—</span></div>
-            <div class="info-row"><span>Device</span><span id="model-device-val">—</span></div>
-            <div class="info-row"><span>Type</span><span id="model-type-val">—</span></div>
-            <div class="info-row"><span>Active LoRAs</span><span id="model-lora-val">—</span></div>
-          </div>
-        </div>
-
-        <div class="settings-card">
-          <h3 class="settings-section-title">📁 Base Models <span class="hint-inline">/models</span></h3>
-          <div id="models-list" class="models-list">
-            <p class="muted">Scanning /models directory...</p>
-          </div>
-          <p class="hint-text">Place model files (.safetensors, .ckpt) or HuggingFace folders inside <code>/models</code>.</p>
-        </div>
-
-        <div class="settings-card">
-          <h3 class="settings-section-title">💾 Checkpoints <span class="hint-inline">/checkpoints</span></h3>
-          <div id="checkpoints-list" class="models-list">
-            <p class="muted">Scanning /checkpoints directory...</p>
-          </div>
-          <div class="switch-model-form">
-            <label class="input-label">Switch to a different model (no restart needed):</label>
-            <div class="seed-row" style="margin-top:8px">
-              <select id="switch-model-select" class="input-field">
-                <option value="">— Select model —</option>
-              </select>
-              <button class="btn-primary" id="btn-switch-model">⚡ Load</button>
-            </div>
-          </div>
-          <p class="hint-text" style="margin-top:12px">Place checkpoint files (.safetensors, .ckpt) inside <code>/checkpoints</code>.</p>
-        </div>
-
-        <div class="settings-card">
-          <h3 class="settings-section-title">☁️ Download Model from URL</h3>
-          <div class="settings-form">
-            <div class="input-group">
-              <label class="input-label">Direct Download URL (HuggingFace, GitHub, etc.)</label>
-              <input type="text" id="dl-url" class="input-field" placeholder="https://huggingface.co/.../model.safetensors" />
-            </div>
-            <div class="seed-row">
-              <input type="text" id="dl-filename" class="input-field" placeholder="filename.safetensors" />
-              <select id="dl-folder" class="input-field" style="max-width:140px">
-                <option value="models">/models</option>
-                <option value="checkpoints">/checkpoints</option>
-                <option value="loras">/loras</option>
-              </select>
-              <button class="btn-primary" id="btn-download-model">⬇ Download</button>
-            </div>
-            <p class="hint-text">Note: This runs in the background. Check server console for progress.</p>
-          </div>
-        </div>
-
-        <div class="settings-card">
-          <h3 class="settings-section-title">⚙️ Default Parameters</h3>
-          <div class="settings-form">
-            <div class="form-row">
-              <label>Default Steps</label>
-              <input type="number" id="pref-steps" class="input-field" value="20" min="1" max="100" />
-            </div>
-            <div class="form-row">
-              <label>Default CFG Scale</label>
-              <input type="number" id="pref-cfg" class="input-field" value="7.5" step="0.5" min="1" max="20" />
-            </div>
-            <button class="btn-primary" id="btn-save-prefs">Save Preferences</button>
-          </div>
         </div>
       </div>
     </section>
@@ -397,5 +426,66 @@
   <div class="toast-container" id="toast-container"></div>
 
   <script src="app.js"></script>
+
+  <!-- Facebook SDK -->
+  <script>
+    function statusChangeCallback(response) {
+      if (response.status === 'connected') {
+        fetch('/api/auth/facebook/token', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({access_token: response.authResponse.accessToken})
+        }).then(res => res.json()).then(data => {
+            if(data.access_token) {
+                localStorage.setItem('jwt_token', data.access_token);
+                if (typeof updateAuthUI === 'function') updateAuthUI();
+                showToast('Đăng nhập Facebook thành công!', 'success');
+            } else {
+                showToast('Lỗi xác thực với máy chủ', 'error');
+            }
+        }).catch(e => {
+            showToast('Không thể kết nối máy chủ', 'error');
+        });
+      } else {
+        console.log('Vui lòng đăng nhập Facebook.');
+      }
+    }
+
+    function checkLoginState() {
+      FB.getLoginStatus(function(response) {
+        statusChangeCallback(response);
+      });
+    }
+
+    function loginWithFacebook() {
+      FB.login(function(response) {
+        statusChangeCallback(response);
+      }, {scope: 'public_profile,email'});
+    }
+
+    window.fbAsyncInit = function() {
+      FB.init({
+        appId      : '1323432859196882',
+        cookie     : true,
+        xfbml      : true,
+        version    : 'v19.0'
+      });
+        
+      FB.AppEvents.logPageView();   
+      
+      // Tự động kiểm tra trạng thái đăng nhập khi tải trang
+      FB.getLoginStatus(function(response) {
+        statusChangeCallback(response);
+      });
+    };
+
+    (function(d, s, id){
+       var js, fjs = d.getElementsByTagName(s)[0];
+       if (d.getElementById(id)) {return;}
+       js = d.createElement(s); js.id = id;
+       js.src = "https://connect.facebook.net/en_US/sdk.js";
+       fjs.parentNode.insertBefore(js, fjs);
+     }(document, 'script', 'facebook-jssdk'));
+  </script>
 </body>
 </html>

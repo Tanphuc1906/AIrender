@@ -31,5 +31,18 @@ class Settings:
     enable_xformers: bool = os.getenv("ENABLE_XFORMERS", "true").lower() == "true"
     enable_attention_slicing: bool = True
 
+    # JWT Settings
+    jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", "fallback-secret-key-for-dev")
+    jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
+    jwt_access_token_expire_minutes: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+
+    # OAuth2 Google
+    google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
+
+    # OAuth2 Facebook
+    facebook_client_id: str = os.getenv("FACEBOOK_CLIENT_ID", "")
+    facebook_client_secret: str = os.getenv("FACEBOOK_CLIENT_SECRET", "")
+
 
 settings = Settings()

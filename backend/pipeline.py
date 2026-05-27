@@ -124,9 +124,23 @@ class ImagePipeline:
         is_sdxl = "XL" in pipe_cls.__name__
         is_single_file = model_path.suffix.lower() in (".safetensors", ".ckpt", ".bin")
 
+        name_lower = model_path.name.lower()
+        is_vpred = any(kw in name_lower for kw in ["vpred", "v-pred", "v_pred", "v prediction"])
+
         load_kwargs: dict = {"torch_dtype": dtype}
         if not is_sdxl:
             load_kwargs["safety_checker"] = None
+            if is_vpred and is_single_file:
+                print("   [SETUP] V-Prediction detected. Fetching SD 2.1 config and applying upcast_attention.")
+                load_kwargs["config"] = "stabilityai/stable-diffusion-2-1"
+                load_kwargs["upcast_attention"] = True
+        else:
+            if is_single_file:
+                # Use local SDXL config if available to prevent diffusers NoneType guessing bug
+                local_sdxl_yaml = BASE_DIR / "sd_xl_base.yaml"
+                if local_sdxl_yaml.exists():
+                    load_kwargs["original_config_file"] = str(local_sdxl_yaml)
+                    print("   [SETUP] Using local sd_xl_base.yaml for SDXL")
 
         try:
             if is_single_file:
@@ -136,15 +150,22 @@ class ImagePipeline:
                 self.pipe = pipe_cls.from_pretrained(str(model_path), **load_kwargs)
         except Exception as exc:
             print(f"   First load attempt failed: {exc}")
-            print("   Retrying without safety_checker...")
+            print("   Retrying with fallback parameters...")
             load_kwargs.pop("safety_checker", None)
+            
+            # Diffusers bug fallback
+            if is_single_file and is_sdxl and "NoneType" in str(exc):
+                print("   [FIX] Supplying SDXL base config to bypass diffusers NoneType bug.")
+                load_kwargs.pop("original_config_file", None)
+                load_kwargs["config"] = "stabilityai/stable-diffusion-xl-base-1.0"
+
             if is_single_file:
                 self.pipe = pipe_cls.from_single_file(str(model_path), **load_kwargs)
             else:
                 self.pipe = pipe_cls.from_pretrained(str(model_path), **load_kwargs)
 
         self.pipe = self.pipe.to(self._device)
-        self._apply_static_performance_optimizations()
+        self._apply_static_performance_optimizations(model_path.name)
 
         self._active_loras = []
         self.is_loaded = True
@@ -160,7 +181,7 @@ class ImagePipeline:
         }
         print(f"Base model ready: {model_path.name}")
 
-    def _apply_static_performance_optimizations(self) -> None:
+    def _apply_static_performance_optimizations(self, model_name: str = "") -> None:
         if self.pipe is None:
             return
 
@@ -186,9 +207,20 @@ class ImagePipeline:
 
         try:
             from diffusers import DPMSolverMultistepScheduler
+            
+            scheduler_kwargs = {"use_karras_sigmas": True}
+            
+            # Check for v-prediction model
+            name_lower = model_name.lower()
+            is_vpred = any(kw in name_lower for kw in ["vpred", "v-pred", "v_pred", "v prediction"])
+            if is_vpred:
+                print(f"   [SETUP] Detected v-prediction model: {model_name}")
+                scheduler_kwargs["prediction_type"] = "v_prediction"
+                scheduler_kwargs["timestep_spacing"] = "trailing"
+                
             self.pipe.scheduler = DPMSolverMultistepScheduler.from_config(
                 self.pipe.scheduler.config,
-                use_karras_sigmas=True,
+                **scheduler_kwargs
             )
             print("   [PERF] Scheduler: DPMSolverMultistepScheduler + Karras")
         except Exception as exc:
@@ -241,8 +273,8 @@ class ImagePipeline:
                     self.pipe.enable_attention_slicing("max")
                     self.pipe.enable_vae_slicing()
                     self.pipe.enable_vae_tiling()
-                    self.pipe.enable_model_cpu_offload()
-                    print("   [VRAM] ultra_low_vram: CPU offload enabled")
+                    self.pipe.enable_sequential_cpu_offload()
+                    print("   [VRAM] ultra_low_vram: Sequential CPU offload enabled (best for low RAM + VRAM)")
                 except Exception as exc:
                     print(f"   [WARN] ultra_low_vram failed: {exc}")
         except Exception as exc:
@@ -452,6 +484,20 @@ class ImagePipeline:
             guidance_scale = min(guidance_scale, 6.5)
             width = min(width, 768)
             height = min(height, 768)
+        elif performance_mode == "turbo":
+            num_inference_steps = min(num_inference_steps, 14)
+            guidance_scale = min(guidance_scale, 6.5)
+            width = min(width, 768)
+            height = min(height, 768)
+            if not getattr(self.pipe, "_is_compiled", False):
+                try:
+                    import torch
+                    print("   [PERF] Compiling UNet for turbo mode (this may take a while on first run)...")
+                    self.pipe.unet = torch.compile(self.pipe.unet, mode="reduce-overhead")
+                    self.pipe._is_compiled = True
+                    print("   [PERF] Compilation initiated.")
+                except Exception as exc:
+                    print(f"   [WARN] Turbo compilation failed: {exc}")
         elif performance_mode == "balanced":
             num_inference_steps = min(num_inference_steps, 22)
             guidance_scale = min(guidance_scale, 8.0)
@@ -505,6 +551,7 @@ class ImagePipeline:
         if self._device == "cuda":
             try:
                 torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
             except Exception:
                 pass
 

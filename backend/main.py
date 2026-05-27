@@ -23,13 +23,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Response
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Response, Depends
+from fastapi.responses import RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .pipeline import ImagePipeline
 from .config import settings
+from .auth import oauth, create_access_token, get_current_user, get_current_user_optional
 
 BASE_DIR = Path(__file__).parent.parent
 frontend_dir = BASE_DIR / "frontend"
@@ -49,6 +52,7 @@ NSFW_COOKIE_VALUE = "unlocked"
 NSFW_KEYWORDS = [
     "nsfw", "porn", "pornmaster", "hentai", "nude", "nudity",
     "sex", "sexy", "xxx", "18plus", "18+", "adult",
+    "cum", "pussy", "blowjob", "pony_play"
 ]
 
 pipeline: Optional[ImagePipeline] = None
@@ -212,6 +216,10 @@ class NSFWLoginRequest(BaseModel):
     password: str = Field(..., description="NSFW unlock password")
 
 
+class FBAccessToken(BaseModel):
+    access_token: str = Field(..., description="Facebook Access Token from JS SDK")
+
+
 class GenerateResponse(BaseModel):
     job_id: str
     status: str
@@ -260,6 +268,8 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
+app.add_middleware(SessionMiddleware, secret_key=settings.jwt_secret_key)
+
 
 
 @app.get("/api/product")
@@ -312,6 +322,69 @@ async def unlock_nsfw(payload: NSFWLoginRequest, response: Response):
 async def lock_nsfw(response: Response):
     response.delete_cookie(NSFW_COOKIE_NAME)
     return {"status": "ok", "unlocked": False, "message": "NSFW models locked"}
+
+
+# --- OAuth2 Routes ---
+
+@app.get("/api/auth/google/login")
+async def google_login(request: Request):
+    if not settings.google_client_id:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    redirect_uri = request.url_for('google_callback')
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/api/auth/google/callback")
+async def google_callback(request: Request):
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        userinfo = token.get('userinfo')
+        if not userinfo:
+            userinfo = await oauth.google.userinfo(token=token)
+        
+        jwt_token = create_access_token(data={"sub": userinfo["email"], "name": userinfo.get("name")})
+        response = RedirectResponse(url=f"/?token={jwt_token}")
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Google login failed: {str(e)}")
+
+
+@app.get("/api/auth/facebook/login")
+async def facebook_login(request: Request):
+    if not settings.facebook_client_id:
+        raise HTTPException(status_code=500, detail="Facebook OAuth not configured")
+    redirect_uri = request.url_for('facebook_callback')
+    return await oauth.facebook.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/api/auth/facebook/callback")
+async def facebook_callback(request: Request):
+    try:
+        token = await oauth.facebook.authorize_access_token(request)
+        resp = await oauth.facebook.get('me?fields=id,name,email', token=token)
+        userinfo = resp.json()
+        
+        jwt_token = create_access_token(data={"sub": userinfo.get("email", userinfo.get("id")), "name": userinfo.get("name")})
+        response = RedirectResponse(url=f"/?token={jwt_token}")
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Facebook login failed: {str(e)}")
+
+
+@app.post("/api/auth/facebook/token")
+async def facebook_token_login(payload: FBAccessToken):
+    import httpx
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"https://graph.facebook.com/me?fields=id,name,email&access_token={payload.access_token}")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Mã token Facebook không hợp lệ hoặc đã hết hạn")
+        userinfo = resp.json()
+        
+    jwt_token = create_access_token(data={"sub": userinfo.get("email", userinfo.get("id")), "name": userinfo.get("name")})
+    return {"access_token": jwt_token, "token_type": "bearer", "user": userinfo}
+
+# ---------------------
+
 
 
 @app.get("/api/health")
@@ -377,7 +450,7 @@ async def list_presets():
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
-async def generate(request: GenerateRequest, background_tasks: BackgroundTasks):
+async def generate(request: GenerateRequest, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
     global pipeline
     if not pipeline or not pipeline.is_loaded:
         raise HTTPException(status_code=503, detail="Model not loaded. Please check /models directory.")
@@ -444,6 +517,44 @@ async def gallery(limit: int = 50):
                 "metadata": meta,
             })
     return images
+
+
+@app.delete("/api/gallery/{filename}")
+async def delete_gallery_image(filename: str):
+    img_path = outputs_dir / filename
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    try:
+        img_path.relative_to(outputs_dir)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Invalid path")
+        
+    try:
+        img_path.unlink()
+        meta_path = img_path.with_suffix(".json")
+        if meta_path.exists():
+            meta_path.unlink()
+        return {"status": "ok", "message": f"Deleted {filename}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/gallery")
+async def delete_all_gallery_images():
+    try:
+        count = 0
+        if outputs_dir.exists():
+            for f in outputs_dir.glob("*.png"):
+                f.unlink()
+                meta_file = f.with_suffix(".json")
+                if meta_file.exists():
+                    meta_file.unlink()
+                count += 1
+        return {"status": "ok", "message": f"Deleted {count} images"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.post("/api/load-model")
