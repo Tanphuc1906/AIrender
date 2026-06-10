@@ -15,6 +15,17 @@ Instead of being only a basic prompt-to-image demo, it includes model metadata, 
 
 ---
 
+## UI Preview
+
+![UI Screenshot 1](ảnh/ui_1.png)
+![UI Screenshot 2](ảnh/ui_2.png)
+![UI Screenshot 3](ảnh/ui_3.png)
+![UI Screenshot 4](ảnh/ui_4.png)
+![UI Screenshot 5](ảnh/ui_5.png)
+![UI Screenshot 6](ảnh/ui_6.png)
+
+---
+
 ## Features
 
 ### Image Generation
